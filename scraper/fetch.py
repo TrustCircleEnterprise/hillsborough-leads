@@ -1,8 +1,8 @@
 """
 Cobb County, GA — Motivated Seller Lead Scraper
+Calls the LandmarkWeb API directly using requests.
 """
 
-import asyncio
 import csv
 import io
 import json
@@ -22,12 +22,6 @@ import requests
 from bs4 import BeautifulSoup
 
 try:
-    from playwright.async_api import async_playwright
-except ImportError:
-    print("playwright not installed")
-    sys.exit(1)
-
-try:
     from dbfread import DBF
 except ImportError:
     DBF = None
@@ -40,7 +34,6 @@ logging.basicConfig(
 log = logging.getLogger("cobb_scraper")
 
 LANDMARK_BASE  = "https://superiorcourtclerk.cobbcounty.gov/LandmarkWeb"
-SEARCH_URL     = f"{LANDMARK_BASE}/search/index?theme=.blue&section=searchCriteriaRecordDate&quickSearchSelection="
 LOOK_BACK_DAYS = 7
 MAX_RETRIES    = 3
 RETRY_DELAY    = 3
@@ -160,204 +153,255 @@ def download_parcel_dbf() -> Optional[Path]:
     return None
 
 
-async def scrape_landmark(date_from: str, date_to: str) -> list[dict]:
-    all_records: list[dict] = []
+def make_session() -> requests.Session:
+    """Create a requests session with a valid ASP.NET session cookie."""
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+    })
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ]
-        )
-        ctx = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            ignore_https_errors=True,
-            viewport={"width": 1280, "height": 800},
-            java_script_enabled=True,
-            locale="en-US",
-        )
+    # Visit home page to get session cookie
+    search_url = f"{LANDMARK_BASE}/search/index?theme=.blue&section=searchCriteriaRecordDate&quickSearchSelection="
+    for attempt in range(MAX_RETRIES):
+        try:
+            r = s.get(search_url, timeout=30, verify=False)
+            log.info(f"Session init status: {r.status_code}, cookies: {dict(s.cookies)}")
+            if "ASP.NET_SessionId" in s.cookies:
+                log.info("Got valid session cookie")
+                return s
+            # Try home page if search page didn't give session
+            r2 = s.get(f"{LANDMARK_BASE}/home/index", timeout=30, verify=False)
+            log.info(f"Home page status: {r2.status_code}, cookies: {dict(s.cookies)}")
+            if s.cookies:
+                return s
+        except Exception as e:
+            log.warning(f"Session init attempt {attempt+1} failed: {e}")
+            time.sleep(RETRY_DELAY)
 
-        # Hide webdriver flag
-        await ctx.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        """)
-
-        page = await ctx.new_page()
-
-        for attempt in range(MAX_RETRIES):
-            try:
-                log.info(f"Attempt {attempt+1}: navigating to search page")
-
-                # First visit home page to get cookies
-                await page.goto(f"{LANDMARK_BASE}/home/index", timeout=60000, wait_until="networkidle")
-                await asyncio.sleep(3)
-                log.info(f"Home page URL: {page.url}")
-
-                # Now go to the filing date search
-                await page.goto(SEARCH_URL, timeout=60000, wait_until="networkidle")
-                await asyncio.sleep(4)
-                log.info(f"Search page URL: {page.url}")
-
-                html = await page.content()
-                soup = BeautifulSoup(html, "lxml")
-
-                # Log all inputs
-                inputs = soup.find_all(["input", "select", "textarea"])
-                log.info(f"Found {len(inputs)} form elements")
-                for el in inputs[:20]:
-                    log.info(f"  {el.name} id={el.get('id','')} name={el.get('name','')} type={el.get('type','')} placeholder={el.get('placeholder','')}")
-
-                # Log page title
-                title = soup.find("title")
-                log.info(f"Page title: {title.get_text() if title else 'none'}")
-
-                # Try to find date inputs using JavaScript evaluation
-                date_inputs = await page.evaluate("""() => {
-                    const inputs = document.querySelectorAll('input');
-                    return Array.from(inputs).map(i => ({
-                        id: i.id,
-                        name: i.name,
-                        type: i.type,
-                        placeholder: i.placeholder,
-                        className: i.className,
-                    }));
-                }""")
-                log.info(f"JS found {len(date_inputs)} inputs:")
-                for inp in date_inputs[:20]:
-                    log.info(f"  {inp}")
-
-                # Try filling date fields by various means
-                filled = False
-
-                # Method 1: by common IDs
-                for begin_sel, end_sel in [
-                    ("#beginDate", "#endDate"),
-                    ("#RecordDateFrom", "#RecordDateTo"),
-                    ("#dateFrom", "#dateTo"),
-                    ("#startDate", "#endDate"),
-                    ("input[name='beginDate']", "input[name='endDate']"),
-                    ("input[name='RecordDateFrom']", "input[name='RecordDateTo']"),
-                ]:
-                    try:
-                        b = page.locator(begin_sel).first
-                        e = page.locator(end_sel).first
-                        if await b.count() > 0 and await e.count() > 0:
-                            await b.triple_click()
-                            await b.fill(date_from)
-                            await e.triple_click()
-                            await e.fill(date_to)
-                            log.info(f"Filled dates via {begin_sel} / {end_sel}")
-                            filled = True
-                            break
-                    except Exception:
-                        pass
-
-                # Method 2: first two visible text inputs
-                if not filled:
-                    try:
-                        visible = page.locator("input:visible")
-                        count = await visible.count()
-                        log.info(f"Visible inputs: {count}")
-                        if count >= 2:
-                            await visible.nth(0).triple_click()
-                            await visible.nth(0).fill(date_from)
-                            await visible.nth(1).triple_click()
-                            await visible.nth(1).fill(date_to)
-                            log.info("Filled via visible inputs fallback")
-                            filled = True
-                    except Exception as e:
-                        log.warning(f"Visible input fallback failed: {e}")
-
-                if not filled:
-                    log.warning("Could not fill date fields — taking screenshot of page for debug")
-                    await page.screenshot(path="/tmp/debug.png")
-
-                await asyncio.sleep(1)
-
-                # Click submit
-                for sel in [
-                    "button[type='submit']",
-                    "input[type='submit']",
-                    "button:has-text('Search')",
-                    "button:has-text('Submit')",
-                    "#btnSearch",
-                    "#searchButton",
-                    ".search-button",
-                ]:
-                    try:
-                        el = page.locator(sel).first
-                        if await el.count() > 0:
-                            await el.click()
-                            log.info(f"Clicked submit via {sel}")
-                            break
-                    except Exception:
-                        pass
-
-                await page.wait_for_load_state("networkidle", timeout=30000)
-                await asyncio.sleep(3)
-                log.info(f"After submit URL: {page.url}")
-
-                # Parse results
-                page_num = 0
-                while True:
-                    page_num += 1
-                    html = await page.content()
-                    soup2 = BeautifulSoup(html, "lxml")
-                    tables = soup2.find_all("table")
-                    log.info(f"Page {page_num}: {len(tables)} tables found")
-
-                    recs = _parse_results(html)
-                    log.info(f"Page {page_num}: {len(recs)} matching records")
-                    all_records.extend(recs)
-
-                    next_btn = None
-                    for sel in ["a:has-text('Next')", "button:has-text('Next')", "[title='Next Page']", ".next a"]:
-                        try:
-                            el = page.locator(sel).first
-                            if await el.count() > 0:
-                                next_btn = el
-                                break
-                        except Exception:
-                            pass
-                    if not next_btn or page_num > 20:
-                        break
-                    await next_btn.click()
-                    await asyncio.sleep(3)
-
-                break
-
-            except Exception as e:
-                log.warning(f"Attempt {attempt+1} error: {e}")
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_DELAY)
-
-        await browser.close()
-
-    return all_records
+    return s
 
 
-def _parse_results(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "lxml")
+def get_verification_token(s: requests.Session) -> str:
+    """Extract ASP.NET request verification token from the search page."""
+    try:
+        url = f"{LANDMARK_BASE}/search/index?theme=.blue&section=searchCriteriaRecordDate&quickSearchSelection="
+        r = s.get(url, timeout=30, verify=False)
+        soup = BeautifulSoup(r.text, "lxml")
+        token = soup.find("input", {"name": "__RequestVerificationToken"})
+        if token:
+            val = token.get("value", "")
+            log.info(f"Got verification token: {val[:20]}...")
+            return val
+        # Also check meta tag
+        meta = soup.find("meta", {"name": "__RequestVerificationToken"})
+        if meta:
+            return meta.get("content", "")
+    except Exception as e:
+        log.warning(f"Could not get verification token: {e}")
+    return ""
+
+
+def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[dict]:
+    """Call RecordDateSearch then GetSearchResults API."""
     records = []
 
-    table = None
-    for t in soup.find_all("table"):
-        rows = t.find_all("tr")
-        if len(rows) >= 2:
-            table = t
+    # Step 1: Set the date search parameters
+    token = get_verification_token(s)
+
+    search_data = {
+        "beginDate": date_from,
+        "endDate": date_to,
+        "exclude": "false",
+        "ReturnIndexGroups": "false",
+        "recordCount": "500",
+        "townName": "",
+        "mobileHomesOnly": "false",
+    }
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"{LANDMARK_BASE}/search/index?theme=.blue&section=searchCriteriaRecordDate&quickSearchSelection=",
+        "Origin": "https://superiorcourtclerk.cobbcounty.gov",
+    }
+
+    if token:
+        search_data["__RequestVerificationToken"] = token
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            log.info(f"Calling RecordDateSearch (attempt {attempt+1})")
+            r = s.post(
+                f"{LANDMARK_BASE}/Search/RecordDateSearch",
+                data=search_data,
+                headers=headers,
+                timeout=60,
+                verify=False,
+            )
+            log.info(f"RecordDateSearch status: {r.status_code}, length: {len(r.text)}")
+            if r.status_code == 200:
+                break
+        except Exception as e:
+            log.warning(f"RecordDateSearch attempt {attempt+1} failed: {e}")
+            time.sleep(RETRY_DELAY)
+
+    # Step 2: Get the actual results
+    start = 0
+    page_size = 500
+
+    while True:
+        results_data = {
+            "draw": "1",
+            "start": str(start),
+            "length": str(page_size),
+            "search[value]": "",
+            "search[regex]": "false",
+        }
+        # Add column definitions
+        for i in range(8):
+            results_data[f"columns[{i}][data]"] = str(i)
+            results_data[f"columns[{i}][searchable]"] = "true"
+            results_data[f"columns[{i}][orderable]"] = "true" if i > 2 else "false"
+            results_data[f"columns[{i}][search][value]"] = ""
+            results_data[f"columns[{i}][search][regex]"] = "false"
+
+        try:
+            log.info(f"Calling GetSearchResults start={start}")
+            r = s.post(
+                f"{LANDMARK_BASE}/Search/GetSearchResults",
+                data=results_data,
+                headers=headers,
+                timeout=60,
+                verify=False,
+            )
+            log.info(f"GetSearchResults status: {r.status_code}, length: {len(r.text)}")
+
+            if r.status_code != 200:
+                break
+
+            data = r.json()
+            rows = data.get("data", [])
+            total = data.get("recordsTotal", 0)
+            log.info(f"Got {len(rows)} rows, total={total}")
+
+            if not rows:
+                break
+
+            for row in rows:
+                try:
+                    rec = parse_api_row(row)
+                    if rec:
+                        records.append(rec)
+                except Exception as e:
+                    log.warning(f"Row parse error: {e}")
+
+            start += page_size
+            if start >= total:
+                break
+
+        except Exception as e:
+            log.warning(f"GetSearchResults error: {e}")
+            # Try parsing as HTML if JSON fails
+            try:
+                html_recs = parse_html_results(r.text)
+                records.extend(html_recs)
+            except Exception:
+                pass
             break
 
+    return records
+
+
+def parse_api_row(row) -> Optional[dict]:
+    """Parse a row from the JSON API response."""
+    # Row can be a list or dict
+    if isinstance(row, list):
+        # Typical columns: status, grantor, grantee, filing_date, doc_type, book_type, book, page
+        if len(row) < 5:
+            return None
+        raw_type = str(row[4]).upper().strip() if len(row) > 4 else ""
+        grantor  = str(row[1]).strip() if len(row) > 1 else ""
+        grantee  = str(row[2]).strip() if len(row) > 2 else ""
+        filed    = str(row[3]).strip() if len(row) > 3 else ""
+        doc_num  = str(row[7]).strip() if len(row) > 7 else ""
+        link     = ""
+    elif isinstance(row, dict):
+        raw_type = str(row.get("DocType", row.get("documentType", row.get("4", "")))).upper().strip()
+        grantor  = str(row.get("Grantor", row.get("grantor", row.get("1", "")))).strip()
+        grantee  = str(row.get("Grantee", row.get("grantee", row.get("2", "")))).strip()
+        filed    = str(row.get("FilingDate", row.get("filingDate", row.get("3", "")))).strip()
+        doc_num  = str(row.get("DocNum", row.get("docNum", row.get("7", "")))).strip()
+        link     = str(row.get("DocLinks", row.get("docLinks", ""))).strip()
+    else:
+        return None
+
+    # Strip HTML tags from all fields
+    for field in [raw_type, grantor, grantee, filed, doc_num]:
+        field = re.sub(r"<[^>]+>", "", field).strip()
+
+    raw_type = re.sub(r"<[^>]+>", "", raw_type).strip()
+    grantor  = re.sub(r"<[^>]+>", "", grantor).strip()
+    grantee  = re.sub(r"<[^>]+>", "", grantee).strip()
+    filed    = re.sub(r"<[^>]+>", "", filed).strip()
+    doc_num  = re.sub(r"<[^>]+>", "", doc_num).strip()
+
+    # Match doc type
+    matched_type = None
+    for t in TARGET_TYPES:
+        if t == raw_type or t in raw_type:
+            matched_type = t
+            break
+
+    if not matched_type:
+        return None
+
+    label, cat = DOC_TYPE_MAP.get(matched_type, (raw_type, "other"))
+
+    # Extract link from HTML if present
+    if link:
+        soup = BeautifulSoup(link, "lxml")
+        a = soup.find("a", href=True)
+        if a:
+            href = a["href"]
+            if not href.startswith("http"):
+                href = f"{LANDMARK_BASE}{href}"
+            link = href
+
+    return {
+        "doc_num":      doc_num,
+        "doc_type":     matched_type,
+        "filed":        _norm_date(filed),
+        "cat":          cat,
+        "cat_label":    label,
+        "owner":        grantor,
+        "grantee":      grantee,
+        "amount":       0.0,
+        "legal":        "",
+        "clerk_url":    link,
+        "prop_address": "", "prop_city": "", "prop_state": "GA", "prop_zip": "",
+        "mail_address": "", "mail_city": "", "mail_state": "", "mail_zip": "",
+        "flags": [], "score": 0,
+    }
+
+
+def parse_html_results(html: str) -> list[dict]:
+    """Fallback: parse HTML table if JSON fails."""
+    soup = BeautifulSoup(html, "lxml")
+    records = []
+    table = None
+    for t in soup.find_all("table"):
+        if len(t.find_all("tr")) >= 2:
+            table = t
+            break
     if not table:
         return records
 
     rows = table.find_all("tr")
-    headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th", "td"])]
-    log.info(f"  Table headers: {headers}")
+    headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th","td"])]
+    log.info(f"HTML fallback headers: {headers}")
 
     def ci(*names):
         for n in names:
@@ -366,80 +410,58 @@ def _parse_results(html: str) -> list[dict]:
                     return i
         return None
 
-    idx_docnum  = ci("clerk", "file", "instrument", "doc", "number", "cfn")
-    idx_type    = ci("type", "document type", "doc type", "kind")
-    idx_filed   = ci("recorded", "filed", "date", "record date")
-    idx_grantor = ci("grantor", "owner", "from", "name", "seller")
-    idx_grantee = ci("grantee", "to", "buyer")
-    idx_legal   = ci("legal", "description")
-    idx_amount  = ci("amount", "consideration", "value")
+    idx_type    = ci("type", "doc type")
+    idx_grantor = ci("grantor", "owner", "name")
+    idx_grantee = ci("grantee")
+    idx_filed   = ci("filing", "date", "recorded")
+    idx_docnum  = ci("clerk", "file", "doc", "number")
 
     for row in rows[1:]:
-        try:
-            cells = row.find_all(["td", "th"])
-            if not cells:
-                continue
+        cells = row.find_all(["td","th"])
+        if not cells:
+            continue
+        def cell(i):
+            if i is None or i >= len(cells):
+                return ""
+            return cells[i].get_text(strip=True)
 
-            def cell(idx):
-                if idx is None or idx >= len(cells):
-                    return ""
-                return cells[idx].get_text(strip=True)
+        raw_type = cell(idx_type).upper()
+        matched_type = None
+        for t in TARGET_TYPES:
+            if t == raw_type or t in raw_type:
+                matched_type = t
+                break
+        if not matched_type:
+            continue
 
-            raw_type = cell(idx_type).upper().strip()
+        label, cat = DOC_TYPE_MAP.get(matched_type, (raw_type, "other"))
+        link_tag = row.find("a", href=True)
+        href = ""
+        if link_tag:
+            href = link_tag["href"]
+            if not href.startswith("http"):
+                href = f"{LANDMARK_BASE}{href}"
 
-            matched_type = None
-            for t in TARGET_TYPES:
-                if t == raw_type or t in raw_type or raw_type in t:
-                    matched_type = t
-                    break
-
-            if not matched_type:
-                continue
-
-            label, cat = DOC_TYPE_MAP.get(matched_type, (raw_type, "other"))
-
-            link_tag = row.find("a", href=True)
-            href = ""
-            if link_tag:
-                href = link_tag["href"]
-                if not href.startswith("http"):
-                    href = f"{LANDMARK_BASE}{href}"
-
-            doc_num = cell(idx_docnum) or (link_tag.get_text(strip=True) if link_tag else "")
-            grantor = cell(idx_grantor)
-
-            if not doc_num and not grantor:
-                continue
-
-            records.append({
-                "doc_num":      doc_num,
-                "doc_type":     matched_type,
-                "filed":        _norm_date(cell(idx_filed)),
-                "cat":          cat,
-                "cat_label":    label,
-                "owner":        grantor,
-                "grantee":      cell(idx_grantee),
-                "amount":       _parse_amount(cell(idx_amount)),
-                "legal":        cell(idx_legal),
-                "clerk_url":    href,
-                "prop_address": "", "prop_city": "", "prop_state": "GA", "prop_zip": "",
-                "mail_address": "", "mail_city": "", "mail_state": "", "mail_zip": "",
-                "flags": [], "score": 0,
-            })
-        except Exception:
-            pass
-
+        records.append({
+            "doc_num":      cell(idx_docnum),
+            "doc_type":     matched_type,
+            "filed":        _norm_date(cell(idx_filed)),
+            "cat":          cat,
+            "cat_label":    label,
+            "owner":        cell(idx_grantor),
+            "grantee":      cell(idx_grantee),
+            "amount":       0.0,
+            "legal":        "",
+            "clerk_url":    href,
+            "prop_address": "", "prop_city": "", "prop_state": "GA", "prop_zip": "",
+            "mail_address": "", "mail_city": "", "mail_state": "", "mail_zip": "",
+            "flags": [], "score": 0,
+        })
     return records
 
 
-def _parse_amount(raw: str) -> float:
-    try:
-        return float(re.sub(r"[^\d.]", "", raw.replace(",", "")) or 0)
-    except Exception:
-        return 0.0
-
-
 def _norm_date(raw: str) -> str:
+    raw = re.sub(r"<[^>]+>", "", raw).strip()
     for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d", "%m/%d/%y", "%B %d, %Y"):
         try:
             return datetime.strptime(raw.strip(), fmt).strftime("%Y-%m-%d")
@@ -549,7 +571,7 @@ def write_outputs(records: list[dict], date_from: str, date_to: str):
     log.info(f"GHL CSV → {ghl_path}")
 
 
-async def main():
+def main():
     global _parcel_index
 
     today     = datetime.now()
@@ -561,7 +583,9 @@ async def main():
     if dbf_path and dbf_path.exists():
         _parcel_index = build_parcel_index(dbf_path)
 
-    records = await scrape_landmark(date_from, date_to)
+    session = make_session()
+    records = search_by_date(session, date_from, date_to)
+    log.info(f"Total matching records: {len(records)}")
 
     for rec in records:
         try:
@@ -580,4 +604,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
