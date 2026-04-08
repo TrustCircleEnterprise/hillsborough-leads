@@ -1,6 +1,7 @@
 """
 Cobb County, GA — Motivated Seller Lead Scraper
-Uses the Landmark portal at superiorcourtclerk.cobbcounty.gov/landmark
+Uses Filing Date Search on the Landmark portal — pulls all docs for the
+last 7 days then filters to our target document types.
 """
 
 import asyncio
@@ -40,9 +41,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("cobb_scraper")
 
-LANDMARK_URL = "https://superiorcourtclerk.cobbcounty.gov/landmark"
-SEARCH_URL   = f"{LANDMARK_URL}/web/search/DOCSEARCH303S1"
-PARCEL_BASE  = "https://gis.cobbcountyga.gov"
+LANDMARK_URL   = "https://superiorcourtclerk.cobbcounty.gov/landmark"
 LOOK_BACK_DAYS = 7
 MAX_RETRIES    = 3
 RETRY_DELAY    = 3
@@ -53,23 +52,30 @@ DATA_DIR      = REPO_ROOT / "data"
 for d in (DASHBOARD_DIR, DATA_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-DOC_TYPES = {
-    "LP":       ("Lis Pendens",           "lis_pendens"),
-    "NOFC":     ("Notice of Foreclosure", "foreclosure"),
-    "TAXDEED":  ("Tax Deed",              "tax_deed"),
-    "JUD":      ("Judgment",              "judgment"),
-    "CCJ":      ("Certified Judgment",    "judgment"),
-    "DRJUD":    ("Domestic Judgment",     "judgment"),
-    "LNCORPTX": ("Corp Tax Lien",         "tax_lien"),
-    "LNIRS":    ("IRS Lien",              "tax_lien"),
-    "LNFED":    ("Federal Lien",          "tax_lien"),
-    "LN":       ("Lien",                  "lien"),
-    "LNMECH":   ("Mechanic's Lien",       "lien"),
-    "LNHOA":    ("HOA Lien",              "lien"),
-    "MEDLN":    ("Medicaid Lien",         "lien"),
-    "PRO":      ("Probate",               "probate"),
-    "NOC":      ("Notice of Commencement","noc"),
-    "RELLP":    ("Release Lis Pendens",   "release"),
+# Target doc types — we filter results to these
+TARGET_TYPES = {
+    "LP", "NOFC", "TAXDEED", "JUD", "CCJ", "DRJUD",
+    "LNCORPTX", "LNIRS", "LNFED", "LN", "LNMECH",
+    "LNHOA", "MEDLN", "PRO", "NOC", "RELLP",
+}
+
+DOC_TYPE_MAP = {
+    "LP":       ("Lis Pendens",            "lis_pendens"),
+    "NOFC":     ("Notice of Foreclosure",  "foreclosure"),
+    "TAXDEED":  ("Tax Deed",               "tax_deed"),
+    "JUD":      ("Judgment",               "judgment"),
+    "CCJ":      ("Certified Judgment",     "judgment"),
+    "DRJUD":    ("Domestic Judgment",      "judgment"),
+    "LNCORPTX": ("Corp Tax Lien",          "tax_lien"),
+    "LNIRS":    ("IRS Lien",               "tax_lien"),
+    "LNFED":    ("Federal Lien",           "tax_lien"),
+    "LN":       ("Lien",                   "lien"),
+    "LNMECH":   ("Mechanic's Lien",        "lien"),
+    "LNHOA":    ("HOA Lien",               "lien"),
+    "MEDLN":    ("Medicaid Lien",          "lien"),
+    "PRO":      ("Probate",                "probate"),
+    "NOC":      ("Notice of Commencement", "noc"),
+    "RELLP":    ("Release Lis Pendens",    "release"),
 }
 
 _parcel_index: dict[str, dict] = {}
@@ -85,8 +91,15 @@ def _col(row: dict, *names: str) -> str:
             return str(v).strip()
     return ""
 
+def _name_variants(owner_raw: str) -> list[str]:
+    parts = re.split(r",\s*", owner_raw.strip(), maxsplit=1)
+    if len(parts) == 2:
+        last, first = parts
+        return list({_norm(owner_raw), _norm(f"{first} {last}"), _norm(f"{last} {first}")})
+    return [_norm(owner_raw)]
 
-# ── Parcel helpers (unchanged) ───────────────────────────────────────────────
+def lookup_parcel(owner: str) -> Optional[dict]:
+    return _parcel_index.get(_norm(owner))
 
 def build_parcel_index(dbf_path: Path) -> dict:
     if DBF is None:
@@ -97,6 +110,8 @@ def build_parcel_index(dbf_path: Path) -> dict:
         for row in table:
             try:
                 owner_raw = _col(row, "OWNER", "OWN1", "OWNERNAME")
+                if not owner_raw:
+                    continue
                 rec = {
                     "prop_address": _col(row, "SITE_ADDR", "SITEADDR"),
                     "prop_city":    _col(row, "SITE_CITY", "SITECITY"),
@@ -107,8 +122,6 @@ def build_parcel_index(dbf_path: Path) -> dict:
                     "mail_state":   _col(row, "STATE", "MAILSTATE"),
                     "mail_zip":     _col(row, "ZIP", "MAILZIP"),
                 }
-                if not owner_raw:
-                    continue
                 for v in _name_variants(owner_raw):
                     if v:
                         idx[v] = rec
@@ -116,30 +129,15 @@ def build_parcel_index(dbf_path: Path) -> dict:
                 pass
     except Exception as e:
         log.warning(f"DBF read error: {e}")
-    log.info(f"Parcel index built: {len(idx):,} name variants")
+    log.info(f"Parcel index: {len(idx):,} variants")
     return idx
-
-
-def _name_variants(owner_raw: str) -> list[str]:
-    parts = re.split(r",\s*", owner_raw.strip(), maxsplit=1)
-    if len(parts) == 2:
-        last, first = parts
-        return list({_norm(owner_raw), _norm(f"{first} {last}"), _norm(f"{last} {first}")})
-    return [_norm(owner_raw)]
-
-
-def lookup_parcel(owner: str) -> Optional[dict]:
-    return _parcel_index.get(_norm(owner))
-
 
 def download_parcel_dbf() -> Optional[Path]:
     cache_dir = REPO_ROOT / ".cache"
     cache_dir.mkdir(exist_ok=True)
     dbf_path = cache_dir / "parcels.dbf"
     if dbf_path.exists() and (time.time() - dbf_path.stat().st_mtime) < 86400:
-        log.info("Using cached parcel DBF")
         return dbf_path
-
     urls = [
         "https://gis.cobbcountyga.gov/download/parcels.zip",
         "https://gis.cobbcountyga.gov/download/Cobb_Parcels.zip",
@@ -156,83 +154,177 @@ def download_parcel_dbf() -> Optional[Path]:
                     dbf_files = [n for n in zf.namelist() if n.lower().endswith(".dbf")]
                     if dbf_files:
                         dbf_path.write_bytes(zf.read(dbf_files[0]))
-                        log.info(f"Parcel DBF extracted from {url}")
+                        log.info(f"Parcel DBF from {url}")
                         return dbf_path
         except Exception as e:
             log.warning(f"Parcel download failed {url}: {e}")
-
-    log.warning("Parcel data unavailable — skipping address enrichment")
+    log.warning("Parcel data unavailable")
     return None
 
 
-# ── Landmark scraper ─────────────────────────────────────────────────────────
+async def scrape_filing_date_search(date_from: str, date_to: str) -> list[dict]:
+    """
+    Use the Landmark Filing Date Search to get all documents filed
+    in the date range, then filter to our target types.
+    """
+    all_records: list[dict] = []
 
-async def scrape_doc_type(page, doc_type: str, date_from: str, date_to: str) -> list[dict]:
-    """Search one doc type using the Landmark Document Type Search."""
-    label, cat = DOC_TYPES.get(doc_type, (doc_type, "other"))
-    records = []
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        ctx = await browser.new_context(
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+            ignore_https_errors=True,
+        )
+        page = await ctx.new_page()
 
-    try:
-        # Navigate to Document Type Search
-        await page.goto(f"{LANDMARK_URL}/web/search/DOCSEARCH303S1", timeout=30000, wait_until="domcontentloaded")
-        await asyncio.sleep(2)
+        for attempt in range(MAX_RETRIES):
+            try:
+                log.info(f"Loading Landmark portal (attempt {attempt+1})")
+                await page.goto(LANDMARK_URL, timeout=60000, wait_until="domcontentloaded")
+                await asyncio.sleep(3)
 
-        # Fill document type text box
-        dt_box = page.locator("textarea, input[type='text']").first
-        await dt_box.fill(doc_type)
-        await asyncio.sleep(0.5)
+                # Click Filing Date Search in the left nav or main icons
+                for sel in [
+                    "a:has-text('Filing Date Search')",
+                    "a:has-text('filing date search')",
+                    "td:has-text('filing date search')",
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.click()
+                            log.info(f"Clicked filing date search via {sel}")
+                            break
+                    except Exception:
+                        pass
 
-        # Fill begin date
-        begin = page.locator("input[id*='beginDate'], input[name*='beginDate'], input[id*='begin'], input[name*='begin']").first
-        if await begin.count() == 0:
-            begin = page.locator("input[type='text']").nth(1)
-        await begin.triple_click()
-        await begin.fill(date_from)
+                await asyncio.sleep(3)
+                log.info(f"Page URL after nav: {page.url}")
 
-        # Fill end date
-        end = page.locator("input[id*='endDate'], input[name*='endDate'], input[id*='end'], input[name*='end']").first
-        if await end.count() == 0:
-            end = page.locator("input[type='text']").nth(2)
-        await end.triple_click()
-        await end.fill(date_to)
+                # Fill Begin Date — clear first then type
+                for sel in [
+                    "input[id*='beginDate']",
+                    "input[name*='beginDate']",
+                    "input[id*='begin']",
+                    "input[name*='begin']",
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.triple_click()
+                            await el.type(date_from, delay=50)
+                            log.info(f"Filled begin date: {date_from}")
+                            break
+                    except Exception:
+                        pass
 
-        # Click Submit
-        await page.locator("button:has-text('Submit'), input[value='Submit']").first.click()
-        await asyncio.sleep(4)
+                await asyncio.sleep(0.5)
 
-        # Parse results across pages
-        while True:
-            html = await page.content()
-            new_recs = _parse_landmark_results(html, doc_type, label, cat)
-            records.extend(new_recs)
-            log.info(f"[{doc_type}] Page batch: {len(new_recs)} records")
+                # Fill End Date
+                for sel in [
+                    "input[id*='endDate']",
+                    "input[name*='endDate']",
+                    "input[id*='end']",
+                    "input[name*='end']",
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.triple_click()
+                            await el.type(date_to, delay=50)
+                            log.info(f"Filled end date: {date_to}")
+                            break
+                    except Exception:
+                        pass
 
-            # Check for next page
-            next_btn = page.locator("a:has-text('Next'), button:has-text('Next')").first
-            if await next_btn.count() == 0:
+                await asyncio.sleep(0.5)
+
+                # Set "Show first 500 records" dropdown if present
+                try:
+                    dd = page.locator("select").last
+                    if await dd.count() > 0:
+                        await dd.select_option(label="Show first 500 records")
+                except Exception:
+                    pass
+
+                # Click Submit
+                for sel in [
+                    "input[value='Submit']",
+                    "button:has-text('Submit')",
+                    "a:has-text('Submit')",
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.click()
+                            log.info("Clicked Submit")
+                            break
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(5)
+
+                # Parse all pages
+                page_num = 0
+                while True:
+                    page_num += 1
+                    html = await page.content()
+                    soup = BeautifulSoup(html, "lxml")
+
+                    # Log tables found
+                    tables = soup.find_all("table")
+                    log.info(f"Page {page_num}: {len(tables)} tables found")
+
+                    recs = _parse_results(html)
+                    log.info(f"Page {page_num}: {len(recs)} records parsed")
+                    all_records.extend(recs)
+
+                    # Next page
+                    next_btn = None
+                    for sel in ["a:has-text('Next')", "a:has-text('>')", "[title='Next Page']"]:
+                        try:
+                            el = page.locator(sel).first
+                            if await el.count() > 0:
+                                next_btn = el
+                                break
+                        except Exception:
+                            pass
+                    if not next_btn:
+                        break
+                    await next_btn.click()
+                    await asyncio.sleep(3)
+
+                log.info(f"Total before filter: {len(all_records)}")
                 break
-            await next_btn.click()
-            await asyncio.sleep(3)
 
-    except Exception as e:
-        log.warning(f"[{doc_type}] Error: {e}")
+            except Exception as e:
+                log.warning(f"Attempt {attempt+1} error: {e}")
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_DELAY)
 
-    log.info(f"[{doc_type}] Total: {len(records)} records")
-    return records
+        await browser.close()
+
+    return all_records
 
 
-def _parse_landmark_results(html: str, doc_type: str, label: str, cat: str) -> list[dict]:
+def _parse_results(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
     records = []
 
-    table = soup.find("table")
+    table = None
+    for t in soup.find_all("table"):
+        rows = t.find_all("tr")
+        if len(rows) >= 2:
+            table = t
+            break
+
     if not table:
         return records
 
     rows = table.find_all("tr")
-    if len(rows) < 2:
-        return records
-
     headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th", "td"])]
     log.info(f"  Headers: {headers}")
 
@@ -243,13 +335,13 @@ def _parse_landmark_results(html: str, doc_type: str, label: str, cat: str) -> l
                     return i
         return None
 
-    idx_docnum  = ci("clerk", "file", "doc", "number", "instrument")
+    idx_docnum  = ci("clerk", "file", "instrument", "doc", "number")
+    idx_type    = ci("type", "document type", "doc type")
     idx_filed   = ci("recorded", "filed", "date")
     idx_grantor = ci("grantor", "owner", "from", "name")
-    idx_grantee = ci("grantee", "to", "buyer")
+    idx_grantee = ci("grantee", "to")
     idx_legal   = ci("legal", "description")
     idx_amount  = ci("amount", "consideration")
-    idx_type    = ci("type", "document type")
 
     for row in rows[1:]:
         try:
@@ -261,6 +353,20 @@ def _parse_landmark_results(html: str, doc_type: str, label: str, cat: str) -> l
                 if idx is None or idx >= len(cells):
                     return ""
                 return cells[idx].get_text(strip=True)
+
+            raw_type = cell(idx_type).upper().strip()
+
+            # Match to our target types
+            matched_type = None
+            for t in TARGET_TYPES:
+                if t in raw_type or raw_type in t:
+                    matched_type = t
+                    break
+
+            if not matched_type:
+                continue  # skip non-target doc types
+
+            label, cat = DOC_TYPE_MAP.get(matched_type, (raw_type, "other"))
 
             link_tag = row.find("a", href=True)
             href = ""
@@ -277,7 +383,7 @@ def _parse_landmark_results(html: str, doc_type: str, label: str, cat: str) -> l
 
             records.append({
                 "doc_num":      doc_num,
-                "doc_type":     cell(idx_type) or doc_type,
+                "doc_type":     matched_type,
                 "filed":        _norm_date(cell(idx_filed)),
                 "cat":          cat,
                 "cat_label":    label,
@@ -312,8 +418,6 @@ def _norm_date(raw: str) -> str:
     return raw.strip()
 
 
-# ── Scoring ──────────────────────────────────────────────────────────────────
-
 WEEK_AGO = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
 
@@ -325,29 +429,26 @@ def compute_flags_and_score(rec: dict, all_records: list[dict]) -> tuple[list[st
     owner = rec.get("owner", "")
     filed = rec.get("filed", "")
 
-    if dt in ("LP", "RELLP"):        flags.append("Lis pendens")
-    if dt == "NOFC":                  flags.append("Pre-foreclosure")
-    if cat == "judgment":             flags.append("Judgment lien")
-    if cat == "tax_lien":             flags.append("Tax lien")
-    if dt == "LNMECH":                flags.append("Mechanic lien")
-    if cat == "probate":              flags.append("Probate / estate")
+    if dt in ("LP", "RELLP"):   flags.append("Lis pendens")
+    if dt == "NOFC":             flags.append("Pre-foreclosure")
+    if cat == "judgment":        flags.append("Judgment lien")
+    if cat == "tax_lien":        flags.append("Tax lien")
+    if dt == "LNMECH":           flags.append("Mechanic lien")
+    if cat == "probate":         flags.append("Probate / estate")
     if owner and re.search(r"\b(LLC|INC|CORP|LTD|TRUST|ESTATE)\b", owner.upper()):
         flags.append("LLC / corp owner")
-    if filed >= WEEK_AGO:             flags.append("New this week")
+    if filed >= WEEK_AGO:        flags.append("New this week")
 
     score += len(flags) * 10
-
     owner_key  = _norm(owner)
     owner_docs = {r["doc_type"] for r in all_records if _norm(r.get("owner","")) == owner_key}
     if "LP" in owner_docs and "NOFC" in owner_docs:
         score += 20
-
     amt = rec.get("amount", 0) or 0
     if amt > 100_000:   score += 15
     elif amt > 50_000:  score += 10
     if filed >= WEEK_AGO: score += 5
     if rec.get("prop_address") or rec.get("mail_address"): score += 5
-
     return flags, min(score, 100)
 
 
@@ -359,8 +460,6 @@ def enrich_record(rec: dict) -> dict:
                 rec[k] = v
     return rec
 
-
-# ── Output ───────────────────────────────────────────────────────────────────
 
 def _split_name(full: str) -> tuple[str, str]:
     full = full.strip()
@@ -420,8 +519,6 @@ def write_outputs(records: list[dict], date_from: str, date_to: str):
     log.info(f"GHL CSV → {ghl_path}")
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
-
 async def main():
     global _parcel_index
 
@@ -434,34 +531,12 @@ async def main():
     if dbf_path and dbf_path.exists():
         _parcel_index = build_parcel_index(dbf_path)
 
-    all_records: list[dict] = []
+    records = await scrape_filing_date_search(date_from, date_to)
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
-        ctx = await browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-            ignore_https_errors=True,
-        )
-        page = await ctx.new_page()
-
-        for doc_type in DOC_TYPES.keys():
-            for attempt in range(MAX_RETRIES):
-                try:
-                    recs = await scrape_doc_type(page, doc_type, date_from, date_to)
-                    all_records.extend(recs)
-                    break
-                except Exception as e:
-                    log.warning(f"[{doc_type}] attempt {attempt+1} failed: {e}")
-                    await asyncio.sleep(RETRY_DELAY)
-
-        await browser.close()
-
-    log.info(f"Total records: {len(all_records)}")
-
-    for rec in all_records:
+    for rec in records:
         try:
             enrich_record(rec)
-            flags, score = compute_flags_and_score(rec, all_records)
+            flags, score = compute_flags_and_score(rec, records)
             rec["flags"] = flags
             rec["score"] = score
         except Exception as e:
@@ -469,8 +544,8 @@ async def main():
             rec["flags"] = []
             rec["score"] = 30
 
-    all_records.sort(key=lambda r: r.get("score", 0), reverse=True)
-    write_outputs(all_records, date_from, date_to)
+    records.sort(key=lambda r: r.get("score", 0), reverse=True)
+    write_outputs(records, date_from, date_to)
     log.info("✅ Done")
 
 
