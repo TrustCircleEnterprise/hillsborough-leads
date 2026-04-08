@@ -1,7 +1,6 @@
 """
 Cobb County, GA — Motivated Seller Lead Scraper
-Uses Filing Date Search on the Landmark portal — pulls all docs for the
-last 7 days then filters to our target document types.
+Uses LandmarkWeb Filing Date Search.
 """
 
 import asyncio
@@ -41,7 +40,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("cobb_scraper")
 
-LANDMARK_URL   = "https://superiorcourtclerk.cobbcounty.gov/landmark"
+LANDMARK_BASE  = "https://superiorcourtclerk.cobbcounty.gov/LandmarkWeb"
+SEARCH_URL     = f"{LANDMARK_BASE}/search/index?theme=.blue&section=searchCriteriaRecordDate&quickSearchSelection="
 LOOK_BACK_DAYS = 7
 MAX_RETRIES    = 3
 RETRY_DELAY    = 3
@@ -52,7 +52,6 @@ DATA_DIR      = REPO_ROOT / "data"
 for d in (DASHBOARD_DIR, DATA_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# Target doc types — we filter results to these
 TARGET_TYPES = {
     "LP", "NOFC", "TAXDEED", "JUD", "CCJ", "DRJUD",
     "LNCORPTX", "LNIRS", "LNFED", "LN", "LNMECH",
@@ -162,11 +161,7 @@ def download_parcel_dbf() -> Optional[Path]:
     return None
 
 
-async def scrape_filing_date_search(date_from: str, date_to: str) -> list[dict]:
-    """
-    Use the Landmark Filing Date Search to get all documents filed
-    in the date range, then filter to our target types.
-    """
+async def scrape_landmark(date_from: str, date_to: str) -> list[dict]:
     all_records: list[dict] = []
 
     async with async_playwright() as pw:
@@ -182,109 +177,118 @@ async def scrape_filing_date_search(date_from: str, date_to: str) -> list[dict]:
 
         for attempt in range(MAX_RETRIES):
             try:
-                log.info(f"Loading Landmark portal (attempt {attempt+1})")
-                await page.goto(LANDMARK_URL, timeout=60000, wait_until="domcontentloaded")
+                log.info(f"Loading search page (attempt {attempt+1}): {SEARCH_URL}")
+                await page.goto(SEARCH_URL, timeout=60000, wait_until="networkidle")
                 await asyncio.sleep(3)
 
-                # Click Filing Date Search in the left nav or main icons
-                for sel in [
-                    "a:has-text('Filing Date Search')",
-                    "a:has-text('filing date search')",
-                    "td:has-text('filing date search')",
-                ]:
-                    try:
-                        el = page.locator(sel).first
-                        if await el.count() > 0:
-                            await el.click()
-                            log.info(f"Clicked filing date search via {sel}")
-                            break
-                    except Exception:
-                        pass
+                # Log what we see
+                html = await page.content()
+                soup = BeautifulSoup(html, "lxml")
+                inputs = soup.find_all(["input", "select", "textarea"])
+                log.info(f"Found {len(inputs)} form elements")
+                for el in inputs[:15]:
+                    log.info(f"  {el.name} id={el.get('id','')} name={el.get('name','')} type={el.get('type','')}")
 
-                await asyncio.sleep(3)
-                log.info(f"Page URL after nav: {page.url}")
-
-                # Fill Begin Date — clear first then type
+                # Fill begin date
+                filled_begin = False
                 for sel in [
-                    "input[id*='beginDate']",
-                    "input[name*='beginDate']",
-                    "input[id*='begin']",
-                    "input[name*='begin']",
+                    "#beginDate", "#RecordDateFrom", "#dateFrom",
+                    "input[id*='begin' i]", "input[id*='from' i]",
+                    "input[name*='begin' i]", "input[name*='from' i]",
+                    "input[placeholder*='begin' i]", "input[placeholder*='start' i]",
                 ]:
                     try:
                         el = page.locator(sel).first
                         if await el.count() > 0:
                             await el.triple_click()
-                            await el.type(date_from, delay=50)
-                            log.info(f"Filled begin date: {date_from}")
+                            await el.fill(date_from)
+                            log.info(f"Filled begin date via {sel}: {date_from}")
+                            filled_begin = True
+                            break
+                    except Exception:
+                        pass
+
+                if not filled_begin:
+                    # Try all date-type inputs
+                    date_inputs = page.locator("input[type='date'], input[type='text']")
+                    count = await date_inputs.count()
+                    log.info(f"Fallback: found {count} text/date inputs")
+                    if count >= 1:
+                        await date_inputs.nth(0).triple_click()
+                        await date_inputs.nth(0).fill(date_from)
+                        log.info(f"Filled first input with {date_from}")
+                    if count >= 2:
+                        await date_inputs.nth(1).triple_click()
+                        await date_inputs.nth(1).fill(date_to)
+                        log.info(f"Filled second input with {date_to}")
+
+                await asyncio.sleep(0.5)
+
+                # Fill end date
+                for sel in [
+                    "#endDate", "#RecordDateTo", "#dateTo",
+                    "input[id*='end' i]", "input[id*='to' i]",
+                    "input[name*='end' i]", "input[name*='to' i]",
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.triple_click()
+                            await el.fill(date_to)
+                            log.info(f"Filled end date via {sel}: {date_to}")
                             break
                     except Exception:
                         pass
 
                 await asyncio.sleep(0.5)
 
-                # Fill End Date
+                # Click submit
                 for sel in [
-                    "input[id*='endDate']",
-                    "input[name*='endDate']",
-                    "input[id*='end']",
-                    "input[name*='end']",
-                ]:
-                    try:
-                        el = page.locator(sel).first
-                        if await el.count() > 0:
-                            await el.triple_click()
-                            await el.type(date_to, delay=50)
-                            log.info(f"Filled end date: {date_to}")
-                            break
-                    except Exception:
-                        pass
-
-                await asyncio.sleep(0.5)
-
-                # Set "Show first 500 records" dropdown if present
-                try:
-                    dd = page.locator("select").last
-                    if await dd.count() > 0:
-                        await dd.select_option(label="Show first 500 records")
-                except Exception:
-                    pass
-
-                # Click Submit
-                for sel in [
-                    "input[value='Submit']",
+                    "button[type='submit']",
+                    "input[type='submit']",
+                    "button:has-text('Search')",
                     "button:has-text('Submit')",
-                    "a:has-text('Submit')",
+                    "a:has-text('Search')",
+                    ".btn-search",
+                    "#searchButton",
+                    "#btnSearch",
                 ]:
                     try:
                         el = page.locator(sel).first
                         if await el.count() > 0:
                             await el.click()
-                            log.info("Clicked Submit")
+                            log.info(f"Clicked search via {sel}")
                             break
                     except Exception:
                         pass
 
-                await asyncio.sleep(5)
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                await asyncio.sleep(3)
 
-                # Parse all pages
+                log.info(f"Results URL: {page.url}")
+
+                # Parse pages
                 page_num = 0
                 while True:
                     page_num += 1
                     html = await page.content()
-                    soup = BeautifulSoup(html, "lxml")
-
-                    # Log tables found
-                    tables = soup.find_all("table")
-                    log.info(f"Page {page_num}: {len(tables)} tables found")
+                    soup2 = BeautifulSoup(html, "lxml")
+                    tables = soup2.find_all("table")
+                    log.info(f"Page {page_num}: {len(tables)} tables")
 
                     recs = _parse_results(html)
-                    log.info(f"Page {page_num}: {len(recs)} records parsed")
+                    log.info(f"Page {page_num}: {len(recs)} records")
                     all_records.extend(recs)
 
                     # Next page
                     next_btn = None
-                    for sel in ["a:has-text('Next')", "a:has-text('>')", "[title='Next Page']"]:
+                    for sel in [
+                        "a:has-text('Next')",
+                        "button:has-text('Next')",
+                        "[title='Next Page']",
+                        ".next a",
+                        "a[rel='next']",
+                    ]:
                         try:
                             el = page.locator(sel).first
                             if await el.count() > 0:
@@ -292,12 +296,12 @@ async def scrape_filing_date_search(date_from: str, date_to: str) -> list[dict]:
                                 break
                         except Exception:
                             pass
-                    if not next_btn:
+                    if not next_btn or page_num > 20:
                         break
                     await next_btn.click()
                     await asyncio.sleep(3)
 
-                log.info(f"Total before filter: {len(all_records)}")
+                log.info(f"Total records scraped: {len(all_records)}")
                 break
 
             except Exception as e:
@@ -326,7 +330,7 @@ def _parse_results(html: str) -> list[dict]:
 
     rows = table.find_all("tr")
     headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th", "td"])]
-    log.info(f"  Headers: {headers}")
+    log.info(f"  Table headers: {headers}")
 
     def ci(*names):
         for n in names:
@@ -335,13 +339,13 @@ def _parse_results(html: str) -> list[dict]:
                     return i
         return None
 
-    idx_docnum  = ci("clerk", "file", "instrument", "doc", "number")
-    idx_type    = ci("type", "document type", "doc type")
-    idx_filed   = ci("recorded", "filed", "date")
-    idx_grantor = ci("grantor", "owner", "from", "name")
-    idx_grantee = ci("grantee", "to")
+    idx_docnum  = ci("clerk", "file", "instrument", "doc", "number", "cfn")
+    idx_type    = ci("type", "document type", "doc type", "kind")
+    idx_filed   = ci("recorded", "filed", "date", "record date")
+    idx_grantor = ci("grantor", "owner", "from", "name", "seller")
+    idx_grantee = ci("grantee", "to", "buyer")
     idx_legal   = ci("legal", "description")
-    idx_amount  = ci("amount", "consideration")
+    idx_amount  = ci("amount", "consideration", "value")
 
     for row in rows[1:]:
         try:
@@ -356,15 +360,14 @@ def _parse_results(html: str) -> list[dict]:
 
             raw_type = cell(idx_type).upper().strip()
 
-            # Match to our target types
             matched_type = None
             for t in TARGET_TYPES:
-                if t in raw_type or raw_type in t:
+                if t == raw_type or t in raw_type or raw_type in t:
                     matched_type = t
                     break
 
             if not matched_type:
-                continue  # skip non-target doc types
+                continue
 
             label, cat = DOC_TYPE_MAP.get(matched_type, (raw_type, "other"))
 
@@ -373,7 +376,7 @@ def _parse_results(html: str) -> list[dict]:
             if link_tag:
                 href = link_tag["href"]
                 if not href.startswith("http"):
-                    href = f"{LANDMARK_URL}{href}"
+                    href = f"{LANDMARK_BASE}{href}"
 
             doc_num = cell(idx_docnum) or (link_tag.get_text(strip=True) if link_tag else "")
             grantor = cell(idx_grantor)
@@ -531,7 +534,7 @@ async def main():
     if dbf_path and dbf_path.exists():
         _parcel_index = build_parcel_index(dbf_path)
 
-    records = await scrape_filing_date_search(date_from, date_to)
+    records = await scrape_landmark(date_from, date_to)
 
     for rec in records:
         try:
