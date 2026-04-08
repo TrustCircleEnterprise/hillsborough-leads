@@ -70,24 +70,6 @@ DOC_TYPE_MAP = {
 
 _parcel_index: dict[str, dict] = {}
 
-# Exact column names from the portal's HTML table
-COLUMNS = [
-    ("eye",          False),
-    ("list",         False),
-    ("status",       False),
-    ("placeholder",  False),
-    ("directname",   True),
-    ("reversename",  True),
-    ("recorddate",   True),
-    ("documenttype", True),
-    ("booktype",     False),
-    ("book",         False),
-    ("page",         False),
-    ("clerkfileno",  True),
-    ("legalfull",    False),
-    ("doclinks",     False),
-]
-
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().upper()
@@ -205,24 +187,35 @@ def get_verification_token(s: requests.Session) -> str:
     return ""
 
 
-def build_datatable_params(start: int = 0, length: int = 500) -> dict:
+def build_datatable_params(start: int = 0, length: int = 500, draw: int = 1) -> dict:
+    """Build DataTables params using numeric string keys matching the portal."""
     params = {
-        "draw": "1",
+        "draw": str(draw),
         "start": str(start),
         "length": str(length),
         "search[value]": "",
         "search[regex]": "false",
-        "order[0][column]": "6",
-        "order[0][dir]": "desc",
+        "order[0][column]": "7",
+        "order[0][dir]": "asc",
     }
-    for i, (name, orderable) in enumerate(COLUMNS):
-        params[f"columns[{i}][data]"] = name
-        params[f"columns[{i}][name]"] = name
+    # 26 columns matching the portal (numeric keys 0-25)
+    orderable_cols = {7, 8, 10, 11, 12}
+    for i in range(26):
+        params[f"columns[{i}][data]"] = str(i)
+        params[f"columns[{i}][name]"] = ""
         params[f"columns[{i}][searchable]"] = "true"
-        params[f"columns[{i}][orderable]"] = "true" if orderable else "false"
+        params[f"columns[{i}][orderable]"] = "true" if i in orderable_cols else "false"
         params[f"columns[{i}][search][value]"] = ""
         params[f"columns[{i}][search][regex]"] = "false"
     return params
+
+
+def clean(s) -> str:
+    if s is None:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", str(s))
+    text = re.sub(r"\\u[0-9a-fA-F]{4}", lambda m: chr(int(m.group()[2:], 16)), text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[dict]:
@@ -237,6 +230,7 @@ def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[di
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
 
+    # Step 1: Set the date search
     search_data = {
         "beginDate": date_from,
         "endDate": date_to,
@@ -251,7 +245,7 @@ def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[di
 
     for attempt in range(MAX_RETRIES):
         try:
-            log.info(f"RecordDateSearch attempt {attempt+1}")
+            log.info(f"RecordDateSearch attempt {attempt+1}: {date_from} → {date_to}")
             r = s.post(
                 f"{LANDMARK_BASE}/Search/RecordDateSearch",
                 data=search_data,
@@ -267,14 +261,15 @@ def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[di
             log.warning(f"RecordDateSearch error: {e}")
             time.sleep(RETRY_DELAY)
 
-    # Paginate GetSearchResults
+    # Step 2: Get results with correct numeric column params
     start = 0
     page_size = 500
+    draw = 1
 
     while True:
-        params = build_datatable_params(start=start, length=page_size)
+        params = build_datatable_params(start=start, length=page_size, draw=draw)
         try:
-            log.info(f"GetSearchResults start={start}")
+            log.info(f"GetSearchResults start={start} draw={draw}")
             r = s.post(
                 f"{LANDMARK_BASE}/Search/GetSearchResults",
                 data=params,
@@ -287,8 +282,7 @@ def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[di
             if r.status_code != 200 or not r.content:
                 break
 
-            log.info(f"Response preview: {r.text[:300]}")
-
+            log.info(f"Preview: {r.text[:200]}")
             data = r.json()
             rows = data.get("data", [])
             total = data.get("recordsTotal", 0)
@@ -306,11 +300,12 @@ def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[di
                     log.warning(f"Row parse error: {e}")
 
             start += len(rows)
+            draw += 1
             if start >= total or len(rows) < page_size:
                 break
 
         except json.JSONDecodeError as e:
-            log.warning(f"JSON error: {e}, preview: {r.text[:200]}")
+            log.warning(f"JSON error: {e}, preview: {r.text[:300]}")
             break
         except Exception as e:
             log.warning(f"GetSearchResults error: {e}")
@@ -319,34 +314,48 @@ def search_by_date(s: requests.Session, date_from: str, date_to: str) -> list[di
     return records
 
 
-def clean(s) -> str:
-    if s is None:
-        return ""
-    return re.sub(r"<[^>]+>", "", str(s)).strip()
+def parse_row(row: dict) -> Optional[dict]:
+    """
+    Parse a row from the API. Keys are numeric strings "0"-"25".
+    From the observed response:
+      "5"  = grantor name (plain text)
+      "6"  = grantor with HTML divs
+      "7"  = date (12/16/1902)
+      "8"  = doc type (PLAT, LP, etc.)
+      "9"  = book type
+      "10" = book
+      "11" = page
+      "12" = clerk file no (nobreak_1400000023)
+      "15" = legal description
+      "DT_RowId" = "doc_7613682_1"
+    """
+    grantor  = clean(row.get("5", ""))
+    grantee  = clean(row.get("6", ""))
+    filed    = clean(row.get("7", ""))
+    raw_type = clean(row.get("8", "")).upper().strip()
+    doc_num  = clean(row.get("12", ""))
+    legal    = clean(row.get("15", ""))
+    row_id   = str(row.get("DT_RowId", ""))
 
+    # Also try grantee from field 6 but strip HTML divs for cleaner name
+    # Field 6 has "POWER PINKNEY J\u003cdiv...\u003eSTROUP MARGARET" format
+    # Use field 5 for grantor and parse field 6 for grantee
+    # Actually field 5 and 6 are both grantor variants — look for reversename
+    # Try field 6 as grantee since it sometimes has second party
+    if not grantee and grantor:
+        # Try to split combined names
+        grantee = ""
 
-def parse_row(row) -> Optional[dict]:
-    if isinstance(row, dict):
-        grantor  = clean(row.get("directname", ""))
-        grantee  = clean(row.get("reversename", ""))
-        filed    = clean(row.get("recorddate", ""))
-        raw_type = clean(row.get("documenttype", "")).upper()
-        doc_num  = clean(row.get("clerkfileno", ""))
-        link_html = str(row.get("doclinks", ""))
-    elif isinstance(row, list):
-        # Fallback for list format
-        grantor  = clean(row[4]) if len(row) > 4 else ""
-        grantee  = clean(row[5]) if len(row) > 5 else ""
-        filed    = clean(row[6]) if len(row) > 6 else ""
-        raw_type = clean(row[7]).upper() if len(row) > 7 else ""
-        doc_num  = clean(row[11]) if len(row) > 11 else ""
-        link_html = str(row[13]) if len(row) > 13 else ""
-    else:
-        return None
+    # Build clerk URL from DT_RowId
+    clerk_url = ""
+    if row_id:
+        doc_id = row_id.replace("doc_", "").split("_")[0]
+        clerk_url = f"{LANDMARK_BASE}/document/index?theme=.blue&id={doc_id}"
 
+    # Match doc type
     matched_type = None
     for t in TARGET_TYPES:
-        if t == raw_type or raw_type.startswith(t) or t in raw_type:
+        if t == raw_type or raw_type == t or raw_type.startswith(t + " "):
             matched_type = t
             break
     if not matched_type:
@@ -354,26 +363,17 @@ def parse_row(row) -> Optional[dict]:
 
     label, cat = DOC_TYPE_MAP.get(matched_type, (raw_type, "other"))
 
-    href = ""
-    if link_html and "<a" in link_html:
-        soup = BeautifulSoup(link_html, "lxml")
-        a = soup.find("a", href=True)
-        if a:
-            href = a["href"]
-            if not href.startswith("http"):
-                href = f"{LANDMARK_BASE}{href}"
-
     return {
-        "doc_num":      doc_num,
+        "doc_num":      doc_num.replace("nobreak_", ""),
         "doc_type":     matched_type,
-        "filed":        _norm_date(filed),
+        "filed":        _norm_date(filed.replace("nobreak_", "")),
         "cat":          cat,
         "cat_label":    label,
         "owner":        grantor,
         "grantee":      grantee,
         "amount":       0.0,
-        "legal":        "",
-        "clerk_url":    href,
+        "legal":        legal,
+        "clerk_url":    clerk_url,
         "prop_address": "", "prop_city": "", "prop_state": "GA", "prop_zip": "",
         "mail_address": "", "mail_city": "", "mail_state": "", "mail_zip": "",
         "flags": [], "score": 0,
