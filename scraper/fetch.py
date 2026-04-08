@@ -14,29 +14,27 @@ import re
 import sys
 import time
 import zipfile
+import urllib3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
-import traceback
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import requests
 from bs4 import BeautifulSoup
 
-# ── Playwright (async) ──────────────────────────────────────────────────────
 try:
     from playwright.async_api import async_playwright, TimeoutError as PWTimeoutError
 except ImportError:
-    print("playwright not installed – run: pip install playwright && python -m playwright install chromium")
+    print("playwright not installed")
     sys.exit(1)
 
-# ── DBF reader ──────────────────────────────────────────────────────────────
 try:
     from dbfread import DBF
 except ImportError:
     DBF = None
-    print("dbfread not installed – parcel lookups will be skipped")
 
-# ── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -44,12 +42,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("cobb_scraper")
 
-# ── Constants ───────────────────────────────────────────────────────────────
 CLERK_BASE = "https://superiorcourtclerk.cobbcounty.gov/records-search"
 PARCEL_BASE = "https://gis.cobbcountyga.gov"
 LOOK_BACK_DAYS = 7
 MAX_RETRIES = 3
-RETRY_DELAY = 3  # seconds
+RETRY_DELAY = 3
 
 REPO_ROOT = Path(__file__).parent.parent
 DASHBOARD_DIR = REPO_ROOT / "dashboard"
@@ -57,7 +54,6 @@ DATA_DIR = REPO_ROOT / "data"
 for d in (DASHBOARD_DIR, DATA_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# ── Document type catalogue ──────────────────────────────────────────────────
 DOC_TYPES = {
     "LP":      ("Lis Pendens",                    "lis_pendens"),
     "NOFC":    ("Notice of Foreclosure",           "foreclosure"),
@@ -77,13 +73,8 @@ DOC_TYPES = {
     "RELLP":   ("Release Lis Pendens",             "release"),
 }
 
-# ── Parcel index (built once) ────────────────────────────────────────────────
 _parcel_index: dict[str, dict] = {}
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# PARCEL DATA
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().upper()
@@ -101,7 +92,6 @@ def build_parcel_index(dbf_path: Path) -> dict:
     if DBF is None:
         return {}
     idx: dict[str, dict] = {}
-
     try:
         table = DBF(str(dbf_path), encoding="latin-1", ignore_missing_memofile=True)
         for row in table:
@@ -114,7 +104,6 @@ def build_parcel_index(dbf_path: Path) -> dict:
                 mail_city = _col(row, "CITY", "MAILCITY")
                 mail_st   = _col(row, "STATE", "MAILSTATE")
                 mail_zip  = _col(row, "ZIP", "MAILZIP")
-
                 rec = {
                     "prop_address": site_addr,
                     "prop_city":    site_city,
@@ -125,10 +114,8 @@ def build_parcel_index(dbf_path: Path) -> dict:
                     "mail_state":   mail_st,
                     "mail_zip":     mail_zip,
                 }
-
                 if not owner_raw:
                     continue
-
                 parts = re.split(r",\s*", owner_raw, maxsplit=1)
                 if len(parts) == 2:
                     last, first = parts[0].strip(), parts[1].strip()
@@ -139,7 +126,6 @@ def build_parcel_index(dbf_path: Path) -> dict:
                     ]
                 else:
                     variants = [_norm(owner_raw)]
-
                 for v in variants:
                     if v:
                         idx[v] = rec
@@ -147,7 +133,6 @@ def build_parcel_index(dbf_path: Path) -> dict:
                 pass
     except Exception as e:
         log.warning(f"DBF read error: {e}")
-
     log.info(f"Parcel index built: {len(idx):,} name variants")
     return idx
 
@@ -183,12 +168,10 @@ def download_parcel_dbf() -> Optional[Path]:
         for attempt in range(MAX_RETRIES):
             try:
                 log.info(f"Attempting parcel download: {url} (attempt {attempt+1})")
-                r = session.get(url, timeout=60, stream=True)
+                r = session.get(url, timeout=60, stream=True, verify=False)
                 if r.status_code != 200:
                     break
-
                 content_type = r.headers.get("Content-Type", "")
-
                 if "zip" in content_type or url.endswith(".zip"):
                     zdata = b"".join(r.iter_content(65536))
                     try:
@@ -201,12 +184,10 @@ def download_parcel_dbf() -> Optional[Path]:
                                 return dbf_path
                     except zipfile.BadZipFile:
                         pass
-
                 if "json" in content_type or "geojson" in content_type:
                     data = r.json()
                     _build_index_from_geojson(data)
                     return None
-
             except Exception as e:
                 log.warning(f"Parcel download attempt {attempt+1} failed: {e}")
                 time.sleep(RETRY_DELAY)
@@ -250,69 +231,109 @@ def _name_variants(owner_raw: str) -> list[str]:
     return [_norm(owner_raw)]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CLERK PORTAL SCRAPER  (Playwright)
-# ═══════════════════════════════════════════════════════════════════════════
-
 async def scrape_clerk(doc_type: str, date_from: str, date_to: str) -> list[dict]:
     records: list[dict] = []
     label, cat = DOC_TYPES.get(doc_type, (doc_type, "other"))
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
         ctx = await browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+            ignore_https_errors=True,
         )
         page = await ctx.new_page()
 
         for attempt in range(MAX_RETRIES):
             try:
                 log.info(f"[{doc_type}] Loading clerk portal (attempt {attempt+1})")
-                await page.goto(CLERK_BASE, timeout=60000, wait_until="networkidle")
+                await page.goto(CLERK_BASE, timeout=60000, wait_until="domcontentloaded")
+                await asyncio.sleep(3)
 
-                selectors_map = {
-                    "doc_type":   ["#DocType", "#ddlDocType", "select[name*='DocType']", "select[name*='doctype']"],
-                    "date_from":  ["#DateFrom", "#txtDateFrom", "input[name*='DateFrom']", "input[name*='dateFrom']"],
-                    "date_to":    ["#DateTo", "#txtDateTo", "input[name*='DateTo']", "input[name*='dateTo']"],
-                    "search_btn": ["#btnSearch", "#Button1", "input[type=submit]", "button[type=submit]"],
-                }
+                # Take snapshot to understand the page structure
+                html = await page.content()
+                soup = BeautifulSoup(html, "lxml")
 
-                async def find_and_fill(keys: list[str], value: str, field_type="input"):
-                    for sel in keys:
-                        try:
-                            el = page.locator(sel).first
-                            if await el.count() > 0:
-                                if field_type == "select":
-                                    await el.select_option(value=value)
-                                else:
-                                    await el.fill(value)
-                                return True
-                        except Exception:
-                            pass
-                    return False
+                # Log all form inputs found
+                inputs = soup.find_all(["input", "select"])
+                log.info(f"[{doc_type}] Found {len(inputs)} form elements")
+                for inp in inputs[:20]:
+                    log.info(f"  {inp.get('type','?')} name={inp.get('name','')} id={inp.get('id','')} class={inp.get('class','')}")
 
-                await find_and_fill(selectors_map["doc_type"], doc_type, "select")
-                await find_and_fill(selectors_map["date_from"], date_from)
-                await find_and_fill(selectors_map["date_to"], date_to)
-
-                for sel in selectors_map["search_btn"]:
+                # Try to find and fill doc type
+                filled_type = False
+                for sel in [
+                    "select[name*='type' i]",
+                    "select[name*='doc' i]",
+                    "select[id*='type' i]",
+                    "select[id*='doc' i]",
+                    "select",
+                ]:
                     try:
-                        btn = page.locator(sel).first
-                        if await btn.count() > 0:
-                            await btn.click()
+                        els = page.locator(sel)
+                        count = await els.count()
+                        if count > 0:
+                            for i in range(count):
+                                el = els.nth(i)
+                                try:
+                                    await el.select_option(value=doc_type)
+                                    filled_type = True
+                                    log.info(f"[{doc_type}] Selected doc type via {sel}[{i}]")
+                                    break
+                                except Exception:
+                                    pass
+                        if filled_type:
                             break
                     except Exception:
                         pass
 
-                await page.wait_for_load_state("networkidle", timeout=30000)
+                # Try to fill dates
+                for sel in ["input[name*='from' i]", "input[id*='from' i]", "input[type='date']", "input[name*='start' i]"]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.fill(date_from)
+                            log.info(f"[{doc_type}] Filled date_from via {sel}")
+                            break
+                    except Exception:
+                        pass
 
+                for sel in ["input[name*='to' i]", "input[id*='to' i]", "input[name*='end' i]"]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.fill(date_to)
+                            log.info(f"[{doc_type}] Filled date_to via {sel}")
+                            break
+                    except Exception:
+                        pass
+
+                # Click search button
+                for sel in ["button[type='submit']", "input[type='submit']", "button:has-text('Search')", "a:has-text('Search')"]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0:
+                            await el.click()
+                            log.info(f"[{doc_type}] Clicked search via {sel}")
+                            break
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(5)
                 html = await page.content()
-                records = _parse_clerk_results(html, doc_type, label, cat)
 
+                # Log page title and snippet for debugging
+                soup2 = BeautifulSoup(html, "lxml")
+                title = soup2.find("title")
+                log.info(f"[{doc_type}] Page title: {title.get_text() if title else 'none'}")
+
+                records = _parse_clerk_results(html, doc_type, label, cat)
+                log.info(f"[{doc_type}] Parsed {len(records)} records")
+
+                # Pagination
                 page_num = 1
                 while True:
                     next_btn = None
-                    for sel in ["a:has-text('Next')", "a:has-text('>')", ".pager a:last-child"]:
+                    for sel in ["a:has-text('Next')", "a:has-text('>')", ".pager a:last-child", "[aria-label='Next']"]:
                         try:
                             el = page.locator(sel).first
                             if await el.count() > 0:
@@ -320,21 +341,17 @@ async def scrape_clerk(doc_type: str, date_from: str, date_to: str) -> list[dict
                                 break
                         except Exception:
                             pass
-
                     if not next_btn:
                         break
-
                     page_num += 1
-                    log.info(f"[{doc_type}] Fetching page {page_num}")
                     await next_btn.click()
-                    await page.wait_for_load_state("networkidle", timeout=30000)
+                    await asyncio.sleep(3)
                     html = await page.content()
                     new_recs = _parse_clerk_results(html, doc_type, label, cat)
                     if not new_recs:
                         break
                     records.extend(new_recs)
 
-                log.info(f"[{doc_type}] Found {len(records)} records")
                 break
 
             except Exception as e:
@@ -353,11 +370,15 @@ def _parse_clerk_results(html: str, doc_type: str, label: str, cat: str) -> list
     soup = BeautifulSoup(html, "lxml")
     records = []
 
-    table = (
-        soup.find("table", id=re.compile(r"grid|result|search", re.I))
-        or soup.find("table", class_=re.compile(r"grid|result|search", re.I))
-        or (soup.find_all("table") or [None])[-1]
-    )
+    tables = soup.find_all("table")
+    log.info(f"  Found {len(tables)} tables on page")
+
+    table = None
+    for t in tables:
+        rows = t.find_all("tr")
+        if len(rows) > 1:
+            table = t
+            break
 
     if not table:
         return records
@@ -367,6 +388,7 @@ def _parse_clerk_results(html: str, doc_type: str, label: str, cat: str) -> list
         return records
 
     headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th", "td"])]
+    log.info(f"  Table headers: {headers}")
 
     def col_idx(*names):
         for n in names:
@@ -375,9 +397,9 @@ def _parse_clerk_results(html: str, doc_type: str, label: str, cat: str) -> list
                     return i
         return None
 
-    idx_docnum  = col_idx("doc", "instrument", "book")
+    idx_docnum  = col_idx("doc", "instrument", "book", "number")
     idx_filed   = col_idx("filed", "date", "recorded")
-    idx_grantor = col_idx("grantor", "owner", "from")
+    idx_grantor = col_idx("grantor", "owner", "from", "name")
     idx_grantee = col_idx("grantee", "to", "buyer")
     idx_legal   = col_idx("legal", "description", "property")
     idx_amount  = col_idx("amount", "consideration", "value")
@@ -403,23 +425,22 @@ def _parse_clerk_results(html: str, doc_type: str, label: str, cat: str) -> list
             grantor = cell(idx_grantor)
             grantee = cell(idx_grantee)
             legal   = cell(idx_legal)
-            amount_raw = cell(idx_amount)
-            amount = _parse_amount(amount_raw)
+            amount  = _parse_amount(cell(idx_amount))
 
             if not doc_num and not grantor:
                 continue
 
             records.append({
-                "doc_num":   doc_num,
-                "doc_type":  doc_type,
-                "filed":     _norm_date(filed),
-                "cat":       cat,
-                "cat_label": label,
-                "owner":     grantor,
-                "grantee":   grantee,
-                "amount":    amount,
-                "legal":     legal,
-                "clerk_url": href,
+                "doc_num":      doc_num,
+                "doc_type":     doc_type,
+                "filed":        _norm_date(filed),
+                "cat":          cat,
+                "cat_label":    label,
+                "owner":        grantor,
+                "grantee":      grantee,
+                "amount":       amount,
+                "legal":        legal,
+                "clerk_url":    href,
                 "prop_address": "", "prop_city": "", "prop_state": "GA", "prop_zip": "",
                 "mail_address": "", "mail_city": "", "mail_state": "", "mail_zip": "",
                 "flags": [], "score": 0,
@@ -447,19 +468,14 @@ def _norm_date(raw: str) -> str:
     return raw.strip()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LEAD SCORING & FLAGGING
-# ═══════════════════════════════════════════════════════════════════════════
-
 WEEK_AGO = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
 
 def compute_flags_and_score(rec: dict, all_records: list[dict]) -> tuple[list[str], int]:
     flags: list[str] = []
     score = 30
-
-    dt  = rec.get("doc_type", "")
-    cat = rec.get("cat", "")
+    dt    = rec.get("doc_type", "")
+    cat   = rec.get("cat", "")
     owner = rec.get("owner", "")
 
     if dt in ("LP", "RELLP"):
@@ -482,7 +498,7 @@ def compute_flags_and_score(rec: dict, all_records: list[dict]) -> tuple[list[st
 
     score += len(flags) * 10
 
-    owner_key = _norm(owner)
+    owner_key  = _norm(owner)
     owner_docs = {r["doc_type"] for r in all_records if _norm(r.get("owner", "")) == owner_key}
     if "LP" in owner_docs and "NOFC" in owner_docs:
         score += 20
@@ -496,16 +512,11 @@ def compute_flags_and_score(rec: dict, all_records: list[dict]) -> tuple[list[st
     if filed >= WEEK_AGO:
         score += 5
 
-    has_addr = bool(rec.get("prop_address") or rec.get("mail_address"))
-    if has_addr:
+    if rec.get("prop_address") or rec.get("mail_address"):
         score += 5
 
     return flags, min(score, 100)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ENRICHMENT
-# ═══════════════════════════════════════════════════════════════════════════
 
 def enrich_record(rec: dict) -> dict:
     parcel = lookup_parcel(rec.get("owner", ""))
@@ -515,10 +526,6 @@ def enrich_record(rec: dict) -> dict:
                 rec[k] = v
     return rec
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# OUTPUT
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _split_name(full: str) -> tuple[str, str]:
     full = full.strip()
@@ -533,7 +540,6 @@ def _split_name(full: str) -> tuple[str, str]:
 
 def write_outputs(records: list[dict], date_from: str, date_to: str):
     with_address = sum(1 for r in records if r.get("prop_address") or r.get("mail_address"))
-
     payload = {
         "fetched_at":   datetime.utcnow().isoformat() + "Z",
         "source":       "Cobb County Superior Court Clerk",
@@ -542,7 +548,6 @@ def write_outputs(records: list[dict], date_from: str, date_to: str):
         "with_address": with_address,
         "records":      records,
     }
-
     for path in [DASHBOARD_DIR / "records.json", DATA_DIR / "records.json"]:
         path.write_text(json.dumps(payload, indent=2, default=str))
         log.info(f"Wrote {len(records)} records → {path}")
@@ -577,15 +582,11 @@ def write_outputs(records: list[dict], date_from: str, date_to: str):
                 "Amount/Debt Owed":      r.get("amount", ""),
                 "Seller Score":          r.get("score", 0),
                 "Motivated Seller Flags":"; ".join(r.get("flags", [])),
-                "Source":               "Cobb County Superior Court Clerk",
+                "Source":                "Cobb County Superior Court Clerk",
                 "Public Records URL":    r.get("clerk_url", ""),
             })
     log.info(f"GHL CSV → {ghl_path}")
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════
 
 async def main():
     global _parcel_index
@@ -632,12 +633,9 @@ async def main():
             rec["score"] = 30
 
     all_records.sort(key=lambda r: r.get("score", 0), reverse=True)
-
     write_outputs(all_records, date_from, date_to)
     log.info("✅ Scrape complete")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
