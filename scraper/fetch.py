@@ -1,6 +1,5 @@
 """
 Hillsborough County, FL — Motivated Seller Lead Scraper
-Uses Official Records Daily Index files from publicrec.hillsclerk.com
 """
 
 import csv
@@ -25,6 +24,12 @@ try:
 except ImportError:
     DBF = None
 
+try:
+    from rapidfuzz import fuzz
+    FUZZY_OK = True
+except ImportError:
+    FUZZY_OK = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -32,11 +37,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("hillsborough_scraper")
 
-INDEX_BASE     = "https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes"
-CLERK_BASE     = "https://publicaccess.hillsclerk.com/oripublicaccess"
-LOOK_BACK_DAYS = 14
-MAX_RETRIES    = 3
-RETRY_DELAY    = 3
+INDEX_BASE      = "https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes"
+CLERK_BASE      = "https://publicaccess.hillsclerk.com/oripublicaccess"
+LOOK_BACK_DAYS  = 14
+MAX_RETRIES     = 3
+RETRY_DELAY     = 3
+FUZZY_THRESHOLD = 82
 
 REPO_ROOT     = Path(__file__).parent.parent
 DASHBOARD_DIR = REPO_ROOT / "dashboard"
@@ -44,94 +50,123 @@ DATA_DIR      = REPO_ROOT / "data"
 for d in (DASHBOARD_DIR, DATA_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# Target doc codes from the D file (col index 3)
 TARGET_CODES = {
-    "LP", "LIS", "LISP",           # Lis Pendens
-    "NF", "NOF", "NOFC",           # Notice of Foreclosure
-    "FC", "FORE", "FORECL",        # Foreclosure
-    "TD", "TAXD",                  # Tax Deed
-    "JUD", "JUDG", "JUDGMENT",     # Judgment
-    "CJ", "CERJ",                  # Certified Judgment
-    "FJ", "FINJ",                  # Final Judgment
-    "ITL", "IRS", "IRSL",          # IRS/Federal Tax Lien
-    "STL", "STTL",                 # State Tax Lien
-    "FTL", "FEDL",                 # Federal Tax Lien
-    "CL", "CLOL", "COL",           # Claim of Lien
-    "ML", "MECL", "MECH",          # Mechanic's Lien
-    "HL", "HOAL",                  # HOA Lien
-    "NOC", "NOCOM",                # Notice of Commencement
-    "RLP", "RELLP",                # Release of Lis Pendens
-    "SL", "SATL",                  # Satisfaction of Lien
+    "LP","LIS","LISP","NF","NOF","NOFC","FC","FORE","FORECL",
+    "TD","TAXD","JUD","JUDG","JUDGMENT","CJ","CERJ","FJ","FINJ",
+    "ITL","IRS","IRSL","STL","STTL","FTL","FEDL",
+    "CL","CLOL","COL","ML","MECL","MECH","HL","HOAL",
+    "NOC","NOCOM","RLP","RELLP","SL","SATL",
 }
 
-# Also match by doc name (col 4) if code doesn't match
 TARGET_NAMES = [
-    "LIS PENDENS", "NOTICE OF LIS PENDENS",
-    "FORECLOSURE", "NOTICE OF FORECLOSURE",
-    "TAX DEED",
-    "JUDGMENT", "FINAL JUDGMENT", "CERTIFIED JUDGMENT",
-    "IRS LIEN", "FEDERAL TAX LIEN", "STATE TAX LIEN", "TAX LIEN",
-    "CLAIM OF LIEN", "MECHANIC", "MECHANICS LIEN",
-    "HOA LIEN",
-    "NOTICE OF COMMENCEMENT",
-    "RELEASE OF LIS PENDENS",
+    "LIS PENDENS","NOTICE OF LIS PENDENS","FORECLOSURE","NOTICE OF FORECLOSURE",
+    "TAX DEED","JUDGMENT","FINAL JUDGMENT","CERTIFIED JUDGMENT",
+    "IRS LIEN","FEDERAL TAX LIEN","STATE TAX LIEN","TAX LIEN",
+    "CLAIM OF LIEN","MECHANIC","MECHANICS LIEN","HOA LIEN",
+    "NOTICE OF COMMENCEMENT","RELEASE OF LIS PENDENS",
 ]
 
-def classify(code: str, name: str) -> tuple[str, str, str]:
-    """Returns (matched_type, label, cat)"""
+def classify(code, name):
     code = code.upper().strip()
     name = name.upper().strip()
-
-    if any(x in name for x in ["LIS PENDENS"]) or code in ("LP","LIS","LISP"):
+    if "LIS PENDENS" in name or code in ("LP","LIS","LISP"):
         return "LP", "Lis Pendens", "lis_pendens"
-    if any(x in name for x in ["FORECLOSURE"]) or code in ("NF","FC","NOF","NOFC","FORE"):
+    if "FORECLOSURE" in name or code in ("NF","FC","NOF","NOFC","FORE"):
         return "FC", "Foreclosure", "foreclosure"
     if "TAX DEED" in name or code in ("TD","TAXD"):
         return "TD", "Tax Deed", "tax_deed"
-    if any(x in name for x in ["JUDGMENT"]) or code in ("JUD","JUDG","CJ","FJ","CERJ","FINJ"):
+    if "JUDGMENT" in name or code in ("JUD","JUDG","CJ","FJ","CERJ","FINJ"):
         return "JUD", "Judgment", "judgment"
     if any(x in name for x in ["IRS","FEDERAL TAX LIEN","FED TAX"]) or code in ("ITL","IRS","IRSL","FTL","FEDL"):
         return "ITL", "Federal/IRS Tax Lien", "tax_lien"
     if "STATE TAX LIEN" in name or code in ("STL","STTL"):
         return "STL", "State Tax Lien", "tax_lien"
-    if any(x in name for x in ["MECHANIC"]) or code in ("ML","MECL","MECH"):
+    if "MECHANIC" in name or code in ("ML","MECL","MECH"):
         return "ML", "Mechanic's Lien", "lien"
     if "HOA" in name or code in ("HL","HOAL"):
         return "HL", "HOA Lien", "lien"
-    if any(x in name for x in ["CLAIM OF LIEN"]) or code in ("CL","CLOL","COL"):
+    if "CLAIM OF LIEN" in name or code in ("CL","CLOL","COL"):
         return "CL", "Claim of Lien", "lien"
     if "NOTICE OF COMMENCEMENT" in name or code in ("NOC","NOCOM"):
         return "NOC", "Notice of Commencement", "noc"
     if "RELEASE OF LIS PENDENS" in name or code in ("RLP","RELLP"):
         return "RLP", "Release Lis Pendens", "release"
-    if any(x in name for x in ["SATISFACTION OF LIEN"]) or code in ("SL","SATL"):
+    if "SATISFACTION OF LIEN" in name or code in ("SL","SATL"):
         return "SL", "Satisfaction of Lien", "release"
     return code, name.title(), "other"
 
 
-_parcel_index: dict[str, dict] = {}
+_parcel_index: dict = {}
+_parcel_bucket: dict = {}
 
-def _norm(s: str) -> str:
+def _norm(s):
     return re.sub(r"\s+", " ", str(s or "")).strip().upper()
 
-def _col(row: dict, *names: str) -> str:
+def _col(row, *names):
     for n in names:
         v = row.get(n, "")
         if v:
             return str(v).strip()
     return ""
 
-def _name_variants(owner_raw: str) -> list[str]:
+def _name_variants(owner_raw):
     parts = re.split(r",\s*", owner_raw.strip(), maxsplit=1)
     if len(parts) == 2:
         last, first = parts
         return list({_norm(owner_raw), _norm(f"{first} {last}"), _norm(f"{last} {first}")})
+    # No comma — try treating first word as last name
+    words = owner_raw.strip().split()
+    if len(words) >= 2:
+        first = " ".join(words[1:])
+        last  = words[0]
+        return list({_norm(owner_raw), _norm(f"{first} {last}"), _norm(f"{last} {first}")})
     return [_norm(owner_raw)]
 
-def lookup_parcel(owner: str) -> Optional[dict]:
-    return _parcel_index.get(_norm(owner))
+def _first_word(s):
+    parts = s.split()
+    return parts[0] if parts else ""
 
-def download_parcel_dbf() -> Optional[Path]:
+def lookup_parcel(owner):
+    key = _norm(owner)
+    if not key:
+        return None
+
+    # 1. Exact match on original
+    result = _parcel_index.get(key)
+    if result:
+        return result
+
+    # 2. Exact match on all name variants
+    for variant in _name_variants(owner):
+        result = _parcel_index.get(variant)
+        if result:
+            return result
+
+    # 3. Fast fuzzy — try buckets for ALL first words of all variants
+    if FUZZY_OK:
+        first_words = set()
+        for variant in _name_variants(owner):
+            fw = _first_word(variant)
+            if fw:
+                first_words.add(fw)
+
+        candidates = []
+        for fw in first_words:
+            candidates.extend(_parcel_bucket.get(fw, []))
+
+        best_score = 0
+        best_match = None
+        for candidate in candidates:
+            score = fuzz.token_sort_ratio(key, candidate)
+            if score > best_score:
+                best_score = score
+                best_match = candidate
+        if best_match and best_score >= FUZZY_THRESHOLD:
+            return _parcel_index.get(best_match)
+
+    return None
+
+def download_parcel_dbf():
     cache_dir = REPO_ROOT / ".cache"
     cache_dir.mkdir(exist_ok=True)
     dbf_path = cache_dir / "parcels.dbf"
@@ -158,13 +193,13 @@ def download_parcel_dbf() -> Optional[Path]:
                         return dbf_path
         except Exception as e:
             log.warning(f"Parcel download failed: {e}")
-    log.warning("Parcel data unavailable")
     return None
 
-def build_parcel_index(dbf_path: Path) -> dict:
+def build_parcel_index(dbf_path):
+    global _parcel_bucket
     if DBF is None:
         return {}
-    idx: dict[str, dict] = {}
+    idx = {}
     try:
         table = DBF(str(dbf_path), encoding="latin-1", ignore_missing_memofile=True)
         for row in table:
@@ -183,17 +218,30 @@ def build_parcel_index(dbf_path: Path) -> dict:
                     "mail_zip":     _col(row, "ZIP", "MAILZIP"),
                 }
                 for v in _name_variants(owner_raw):
-                    if v:
+                    if v and v not in idx:
                         idx[v] = rec
             except Exception:
                 pass
     except Exception as e:
         log.warning(f"DBF error: {e}")
-    log.info(f"Parcel index: {len(idx):,} variants")
+
+    bucket = {}
+    for k in idx:
+        fw = _first_word(k)
+        if fw not in bucket:
+            bucket[fw] = []
+        bucket[fw].append(k)
+    _parcel_bucket = bucket
+
+    log.info(f"Parcel index: {len(idx):,} variants, {len(bucket):,} first-word buckets")
+    if FUZZY_OK:
+        log.info("Fast fuzzy matching enabled")
+    else:
+        log.warning("rapidfuzz not installed — exact matching only")
     return idx
 
 
-def fetch_file(url: str) -> Optional[str]:
+def fetch_file(url):
     s = requests.Session()
     s.headers.update({"User-Agent": "Mozilla/5.0"})
     for attempt in range(MAX_RETRIES):
@@ -203,24 +251,13 @@ def fetch_file(url: str) -> Optional[str]:
                 return r.text
             if r.status_code == 404:
                 return None
-            log.warning(f"HTTP {r.status_code} for {url}")
             return None
         except Exception as e:
             log.warning(f"Fetch attempt {attempt+1}: {e}")
             time.sleep(RETRY_DELAY)
     return None
 
-
-def parse_d_file(content: str) -> list[dict]:
-    """
-    Format: DDA|29|InstrumentNum|DocCode|DocName|Legal|...|Pages|Date|Time||
-    Col 0: DDA
-    Col 2: Instrument number
-    Col 3: Doc code
-    Col 4: Doc name
-    Col 5: Legal description
-    Col 10: Date (MM/DD/YYYY)
-    """
+def parse_d_file(content):
     records = []
     for line in content.splitlines():
         line = line.strip()
@@ -235,29 +272,16 @@ def parse_d_file(content: str) -> list[dict]:
             doc_name   = parts[4].strip().upper() if len(parts) > 4 else ""
             legal      = parts[5].strip() if len(parts) > 5 else ""
             rec_date   = parts[10].strip() if len(parts) > 10 else ""
-
-            # Check if target
-            is_target = (
-                doc_code in TARGET_CODES or
-                any(n in doc_name for n in TARGET_NAMES)
-            )
+            is_target  = doc_code in TARGET_CODES or any(n in doc_name for n in TARGET_NAMES)
             if not is_target:
                 continue
-
             matched, label, cat = classify(doc_code, doc_name)
             clerk_url = f"{CLERK_BASE}/?instrument={instrument}" if instrument else ""
-
             records.append({
-                "doc_num":      instrument,
-                "doc_type":     matched,
-                "filed":        _norm_date(rec_date),
-                "cat":          cat,
-                "cat_label":    label,
-                "owner":        "",
-                "grantee":      "",
-                "amount":       0.0,
-                "legal":        legal,
-                "clerk_url":    clerk_url,
+                "doc_num": instrument, "doc_type": matched,
+                "filed": _norm_date(rec_date), "cat": cat, "cat_label": label,
+                "owner": "", "grantee": "", "amount": 0.0, "legal": legal,
+                "clerk_url": clerk_url,
                 "prop_address": "", "prop_city": "", "prop_state": "FL", "prop_zip": "",
                 "mail_address": "", "mail_city": "", "mail_state": "", "mail_zip": "",
                 "flags": [], "score": 0,
@@ -266,13 +290,8 @@ def parse_d_file(content: str) -> list[dict]:
             log.warning(f"Parse error: {e}")
     return records
 
-
-def parse_p_file(content: str) -> dict[str, dict]:
-    """
-    Format: DPA|29|InstrumentNum|PartyType|PartyName|...
-    PartyType: GR=Grantor, GE=Grantee (or 1/2)
-    """
-    parties: dict[str, dict] = {}
+def parse_p_file(content):
+    parties = {}
     for line in content.splitlines():
         line = line.strip()
         if not line:
@@ -281,13 +300,11 @@ def parse_p_file(content: str) -> dict[str, dict]:
         if len(parts) < 5:
             continue
         try:
-            instrument  = parts[2].strip()
-            party_type  = parts[4].strip().upper()  # FRM or TO
-            party_name  = parts[5].strip() if len(parts) > 5 else ""
-
+            instrument = parts[2].strip()
+            party_type = parts[4].strip().upper()
+            party_name = parts[5].strip() if len(parts) > 5 else ""
             if instrument not in parties:
                 parties[instrument] = {"grantor": "", "grantee": ""}
-
             if party_type == "FRM" and not parties[instrument]["grantor"]:
                 parties[instrument]["grantor"] = party_name
             elif party_type == "TO" and not parties[instrument]["grantee"]:
@@ -296,39 +313,27 @@ def parse_p_file(content: str) -> dict[str, dict]:
             pass
     return parties
 
-
-def scrape_day(date_str: str) -> list[dict]:
-    """Scrape one day. date_str = YYYYMMDD"""
+def scrape_day(date_str):
     d_url = f"{INDEX_BASE}/D{date_str}01id.29"
     d_content = fetch_file(d_url)
     if not d_content:
         return []
-
     records = parse_d_file(d_content)
     log.info(f"  {date_str}: {len(records)} target records")
-
     if not records:
         return []
-
     p_url = f"{INDEX_BASE}/P{date_str}01id.29"
     p_content = fetch_file(p_url)
     if p_content:
         parties = parse_p_file(p_content)
-        log.info(f"  Party file: {len(parties)} instruments")
-        # Log first party entry to check format
-        if parties:
-            first = list(parties.items())[0]
-            log.info(f"  Sample party: {first}")
         for rec in records:
             instr = rec["doc_num"]
             if instr in parties:
                 rec["owner"]   = parties[instr]["grantor"]
                 rec["grantee"] = parties[instr]["grantee"]
-
     return records
 
-
-def _norm_date(raw: str) -> str:
+def _norm_date(raw):
     raw = raw.strip()
     for fmt in ("%m/%d/%Y", "%Y%m%d", "%Y-%m-%d", "%m-%d-%Y"):
         try:
@@ -337,44 +342,38 @@ def _norm_date(raw: str) -> str:
             pass
     return raw
 
-
 WEEK_AGO = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
-
-def compute_flags_and_score(rec: dict, all_records: list[dict]) -> tuple[list[str], int]:
-    flags: list[str] = []
+def compute_flags_and_score(rec, all_records):
+    flags = []
     score = 30
     dt    = rec.get("doc_type", "")
     cat   = rec.get("cat", "")
     owner = rec.get("owner", "")
     filed = rec.get("filed", "")
-
-    if dt == "LP":                   flags.append("Lis pendens")
-    if dt in ("NF","FC"):           flags.append("Pre-foreclosure")
-    if cat == "judgment":            flags.append("Judgment lien")
-    if cat == "tax_lien":            flags.append("Tax lien")
-    if dt in ("ML","CL"):           flags.append("Mechanic lien")
-    if dt == "HL":                   flags.append("HOA lien")
-    if cat == "probate":             flags.append("Probate / estate")
+    if dt == "LP":              flags.append("Lis pendens")
+    if dt in ("NF","FC"):      flags.append("Pre-foreclosure")
+    if cat == "judgment":       flags.append("Judgment lien")
+    if cat == "tax_lien":       flags.append("Tax lien")
+    if dt in ("ML","CL"):      flags.append("Mechanic lien")
+    if dt == "HL":              flags.append("HOA lien")
+    if cat == "probate":        flags.append("Probate / estate")
     if owner and re.search(r"\b(LLC|INC|CORP|LTD|TRUST|ESTATE)\b", owner.upper()):
         flags.append("LLC / corp owner")
-    if filed >= WEEK_AGO:            flags.append("New this week")
-
+    if filed >= WEEK_AGO:       flags.append("New this week")
     score += len(flags) * 10
     owner_key  = _norm(owner)
     owner_docs = {r["doc_type"] for r in all_records if _norm(r.get("owner","")) == owner_key}
     if "LP" in owner_docs and any(d in owner_docs for d in ("NF","FC")):
         score += 20
     amt = rec.get("amount", 0) or 0
-    if amt > 100_000:   score += 15
-    elif amt > 50_000:  score += 10
+    if amt > 100_000:  score += 15
+    elif amt > 50_000: score += 10
     if filed >= WEEK_AGO: score += 5
     if rec.get("prop_address") or rec.get("mail_address"): score += 5
     return flags, min(score, 100)
 
-
-def enrich_record(rec: dict) -> dict:
-    # Try grantee first (property owner being sued/liened), then grantor
+def enrich_record(rec):
     for name in [rec.get("grantee",""), rec.get("owner","")]:
         if not name:
             continue
@@ -386,8 +385,7 @@ def enrich_record(rec: dict) -> dict:
             return rec
     return rec
 
-
-def _split_name(full: str) -> tuple[str, str]:
+def _split_name(full):
     full = full.strip()
     if "," in full:
         p = full.split(",", 1)
@@ -395,8 +393,7 @@ def _split_name(full: str) -> tuple[str, str]:
     p = full.split()
     return (p[0].title(), " ".join(p[1:]).title()) if len(p) >= 2 else (full.title(), "")
 
-
-def write_outputs(records: list[dict], date_from: str, date_to: str):
+def write_outputs(records, date_from, date_to):
     with_address = sum(1 for r in records if r.get("prop_address") or r.get("mail_address"))
     payload = {
         "fetched_at":   datetime.utcnow().isoformat() + "Z",
@@ -411,7 +408,6 @@ def write_outputs(records: list[dict], date_from: str, date_to: str):
     for path in [DASHBOARD_DIR / "records.json", DATA_DIR / "records.json"]:
         path.write_text(json.dumps(payload, indent=2, default=str))
         log.info(f"Wrote {len(records)} records to {path}")
-
     ghl_path = DATA_DIR / "ghl_export.csv"
     fieldnames = [
         "First Name","Last Name","Mailing Address","Mailing City","Mailing State","Mailing Zip",
@@ -423,7 +419,7 @@ def write_outputs(records: list[dict], date_from: str, date_to: str):
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in records:
-            first, last = _split_name(r.get("owner",""))
+            first, last = _split_name(r.get("grantee","") or r.get("owner",""))
             writer.writerow({
                 "First Name": first, "Last Name": last,
                 "Mailing Address": r.get("mail_address",""),
@@ -446,8 +442,7 @@ def write_outputs(records: list[dict], date_from: str, date_to: str):
             })
     log.info("GHL CSV written")
 
-
-def business_days_back(n: int) -> list[str]:
+def business_days_back(n):
     days = []
     d = datetime.now()
     while len(days) < n:
@@ -456,19 +451,15 @@ def business_days_back(n: int) -> list[str]:
             days.append(d.strftime("%Y%m%d"))
     return days
 
-
 def main():
     global _parcel_index
     log.info("Hillsborough County FL — Motivated Seller Scraper")
-
     dbf_path = download_parcel_dbf()
     if dbf_path and dbf_path.exists():
         _parcel_index = build_parcel_index(dbf_path)
-
     days = business_days_back(LOOK_BACK_DAYS)
     log.info(f"Checking {len(days)} business days: {days[-1]} to {days[0]}")
-
-    all_records: list[dict] = []
+    all_records = []
     found_days = 0
     for day in reversed(days):
         try:
@@ -480,9 +471,7 @@ def main():
             time.sleep(0.5)
         except Exception as e:
             log.warning(f"Day {day} failed: {e}")
-
     log.info(f"Found data for {found_days} days")
-
     seen = set()
     unique = []
     for r in all_records:
@@ -492,7 +481,6 @@ def main():
             unique.append(r)
     all_records = unique
     log.info(f"Total unique records: {len(all_records)}")
-
     for rec in all_records:
         try:
             enrich_record(rec)
@@ -502,14 +490,11 @@ def main():
         except Exception as e:
             rec["flags"] = []
             rec["score"] = 30
-
     all_records.sort(key=lambda r: r.get("score", 0), reverse=True)
-
     date_from = days[-1]
     date_to   = days[0]
     write_outputs(all_records, date_from, date_to)
     log.info("Done")
-
 
 if __name__ == "__main__":
     main()
