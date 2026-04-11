@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Cobb County — Motivated Seller Intelligence</title>
+<title>Hillsborough County — Motivated Seller Intelligence</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Barlow+Condensed:wght@300;500;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet"/>
@@ -403,7 +403,7 @@ a.doc-link:hover{color:var(--accent);text-decoration:underline}
 <body>
 
 <nav id="topbar">
-  <div class="logo">COBB<span>LEADS</span></div>
+  <div class="logo">HILLSBOROUGH<span>LEADS</span></div>
   <div class="sep"></div>
   <div class="status-pill"><div class="dot"></div><span id="last-fetched">Loading…</span></div>
   <div class="spacer"></div>
@@ -412,11 +412,11 @@ a.doc-link:hover{color:var(--accent);text-decoration:underline}
 
 <section id="hero">
   <div>
-    <div class="hero-title"><span class="county">Cobb County</span><br>Motivated Sellers</div>
+    <div class="hero-title"><span class="county">Hillsborough County</span><br>Motivated Sellers</div>
     <div class="hero-meta">
       <span id="date-range">—</span>
       <span>·</span>
-      <span>Superior Court Clerk + GIS Parcel Data</span>
+      <span>Hillsborough County Clerk of Circuit Courts + GIS Parcel Data</span>
     </div>
   </div>
   <div class="metric-strip">
@@ -460,13 +460,14 @@ a.doc-link:hover{color:var(--accent);text-decoration:underline}
     <table id="records-table">
       <thead>
         <tr>
-          <th onclick="sortBy('score')"       data-col="score">Score</th>
-          <th onclick="sortBy('cat_label')"   data-col="cat_label">Type</th>
-          <th onclick="sortBy('doc_type')"    data-col="doc_type">Code</th>
-          <th onclick="sortBy('filed')"       data-col="filed">Filed</th>
-          <th onclick="sortBy('owner')"       data-col="owner">Owner / Grantor</th>
+          <th onclick="sortBy('score')"        data-col="score">Score</th>
+          <th onclick="sortBy('cat_label')"    data-col="cat_label">Type</th>
+          <th onclick="sortBy('doc_type')"     data-col="doc_type">Code</th>
+          <th onclick="sortBy('filed')"        data-col="filed">Filed</th>
+          <th onclick="sortBy('grantee')"      data-col="grantee">Property Owner</th>
+          <th onclick="sortBy('owner')"        data-col="owner">Grantor / Plaintiff</th>
           <th onclick="sortBy('prop_address')" data-col="prop_address">Property Address</th>
-          <th onclick="sortBy('amount')"      data-col="amount">Amount</th>
+          <th onclick="sortBy('amount')"       data-col="amount">Amount</th>
           <th>Flags</th>
           <th>Link</th>
         </tr>
@@ -497,6 +498,16 @@ const CAT_COLORS = {
   other:'#6a7090',
 };
 
+function formatFiled(filed) {
+  if (!filed) return '—';
+  const s = String(filed).trim();
+  if (/^\d{8}$/.test(s)) {
+    return s.slice(0,4) + '-' + s.slice(4,6) + '-' + s.slice(6,8);
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  return s;
+}
+
 async function init() {
   try {
     const res = await fetch('records.json');
@@ -506,8 +517,12 @@ async function init() {
 
     document.getElementById('last-fetched').textContent =
       'Updated ' + new Date(data.fetched_at).toLocaleString();
+
+    const from = data.date_range?.from || '';
+    const to   = data.date_range?.to   || '';
     document.getElementById('date-range').textContent =
-      `${data.date_range?.from || ''} → ${data.date_range?.to || ''}`;
+      `${formatFiled(from)} → ${formatFiled(to)}`;
+
     document.getElementById('m-total').textContent = data.total || ALL_RECORDS.length;
     document.getElementById('m-hot').textContent =
       ALL_RECORDS.filter(r => r.score >= 80).length;
@@ -589,8 +604,8 @@ function applyFilters() {
   const fScore = parseInt(document.getElementById('f-score').value) || 0;
 
   filtered = ALL_RECORDS.filter(r => {
-    if (fType  && r.doc_type  !== fType)   return false;
-    if (fScore && r.score < fScore)        return false;
+    if (fType  && r.doc_type  !== fType)        return false;
+    if (fScore && r.score < fScore)             return false;
     if (activeCat && r.cat_label !== activeCat) return false;
     if (activeFlags.size) {
       const rf = new Set(r.flags || []);
@@ -598,7 +613,7 @@ function applyFilters() {
     }
     if (q) {
       const haystack = [
-        r.owner, r.grantee, r.doc_num, r.prop_address,
+        r.grantee, r.owner, r.doc_num, r.prop_address,
         r.mail_address, r.doc_type, r.cat_label, r.legal
       ].join(' ').toLowerCase();
       if (!haystack.includes(q)) return false;
@@ -658,6 +673,8 @@ function renderTable() {
   const rows = filtered.slice(0, 500);
   tbody.innerHTML = rows.map((r, i) => {
     const sc = r.score || 0;
+    const propertyOwner = r.grantee || '—';
+    const grantor       = r.owner   || '—';
     const addr = [r.prop_address, r.prop_city].filter(Boolean).join(', ') || '—';
     const flagHtml = (r.flags||[]).slice(0,3).map(f =>
       `<span class="flag">${f}</span>`).join('');
@@ -672,8 +689,9 @@ function renderTable() {
       <td><span class="score-badge ${scoreClass(sc)}">${sc}</span></td>
       <td><span class="cat-pill cat-${r.cat||'other'}">${r.cat_label||r.cat||'—'}</span></td>
       <td><code>${r.doc_type||'—'}</code></td>
-      <td class="mono">${r.filed||'—'}</td>
-      <td class="wrap">${r.owner||'—'}</td>
+      <td class="mono">${formatFiled(r.filed)}</td>
+      <td class="wrap">${propertyOwner}</td>
+      <td class="wrap" style="color:var(--muted);font-size:11px">${grantor}</td>
       <td class="wrap">${addr}</td>
       <td>${amtHtml}</td>
       <td><div class="flag-list">${flagHtml}</div></td>
@@ -682,7 +700,7 @@ function renderTable() {
   }).join('');
 
   if (filtered.length > 500) {
-    tbody.innerHTML += `<tr><td colspan="9" style="text-align:center;padding:14px;color:var(--muted);font-family:var(--mono);font-size:11px">
+    tbody.innerHTML += `<tr><td colspan="10" style="text-align:center;padding:14px;color:var(--muted);font-family:var(--mono);font-size:11px">
       Showing 500 of ${filtered.length} — refine filters to see more.
     </td></tr>`;
   }
@@ -703,7 +721,7 @@ function openDetail(idx) {
   document.getElementById('detail-body').innerHTML = `
     <div class="score-ring">${sc}</div>
     <div style="text-align:center;margin-bottom:20px">
-      <div style="font-family:var(--cond);font-weight:900;font-size:20px">${r.owner||'Unknown Owner'}</div>
+      <div style="font-family:var(--cond);font-weight:900;font-size:20px">${r.grantee||r.owner||'Unknown Owner'}</div>
       <div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px">${r.cat_label||''} · ${r.doc_type||''}</div>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:20px">
@@ -713,9 +731,10 @@ function openDetail(idx) {
       <h4>Document</h4>
       <div class="detail-row"><span class="detail-key">Doc Number</span><span class="detail-val mono">${r.doc_num||'—'}</span></div>
       <div class="detail-row"><span class="detail-key">Type</span><span class="detail-val">${r.cat_label||'—'} (${r.doc_type||'—'})</span></div>
-      <div class="detail-row"><span class="detail-key">Filed</span><span class="detail-val mono">${r.filed||'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Filed</span><span class="detail-val mono">${formatFiled(r.filed)}</span></div>
       <div class="detail-row"><span class="detail-key">Amount</span><span class="detail-val" style="color:${r.amount>100000?'var(--red)':'inherit'}">${r.amount?fmt$(r.amount):'—'}</span></div>
-      <div class="detail-row"><span class="detail-key">Grantee</span><span class="detail-val">${r.grantee||'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Property Owner</span><span class="detail-val">${r.grantee||'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Grantor / Plaintiff</span><span class="detail-val">${r.owner||'—'}</span></div>
       <div class="detail-row"><span class="detail-key">Legal Desc</span><span class="detail-val" style="font-size:11px;max-width:220px;white-space:normal;text-align:right">${r.legal||'—'}</span></div>
     </div>
     <div class="detail-section">
@@ -748,11 +767,11 @@ function exportCSV() {
   const rows = [cols.join(',')];
 
   filtered.forEach(r => {
-    const owner = (r.owner || '').trim();
+    const owner = (r.grantee || r.owner || '').trim();
     let first = '', last = '';
     if (owner.includes(',')) {
       const [l, f] = owner.split(',');
-      last = l.trim(); first = f.trim();
+      last = l.trim(); first = (f || '').trim();
     } else {
       const parts = owner.split(' ');
       first = parts[0] || '';
@@ -762,11 +781,11 @@ function exportCSV() {
     const vals = [
       first, last,
       r.mail_address||'', r.mail_city||'', r.mail_state||'', r.mail_zip||'',
-      r.prop_address||'', r.prop_city||'', r.prop_state||'GA', r.prop_zip||'',
-      r.cat_label||'', r.doc_type||'', r.filed||'', r.doc_num||'',
+      r.prop_address||'', r.prop_city||'', r.prop_state||'FL', r.prop_zip||'',
+      r.cat_label||'', r.doc_type||'', formatFiled(r.filed), r.doc_num||'',
       r.amount||'', r.score||0,
       (r.flags||[]).join('; '),
-      'Cobb County Superior Court Clerk',
+      'Hillsborough County Clerk of Circuit Courts',
       r.clerk_url||''
     ].map(v => `"${String(v).replace(/"/g,'""')}"`);
 
@@ -776,7 +795,7 @@ function exportCSV() {
   const blob = new Blob([rows.join('\n')], {type:'text/csv'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `cobb_leads_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `hillsborough_leads_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
 }
 
