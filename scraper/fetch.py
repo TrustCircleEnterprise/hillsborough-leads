@@ -114,7 +114,6 @@ def _name_variants(owner_raw):
     if len(parts) == 2:
         last, first = parts
         return list({_norm(owner_raw), _norm(f"{first} {last}"), _norm(f"{last} {first}")})
-    # No comma — try treating first word as last name
     words = owner_raw.strip().split()
     if len(words) >= 2:
         first = " ".join(words[1:])
@@ -377,8 +376,15 @@ def enrich_record(rec):
     for name in [rec.get("grantee",""), rec.get("owner","")]:
         if not name:
             continue
+        # Skip government entities and corporations
+        if re.search(r"\b(LLC|INC|CORP|LTD|TRUST|STATE OF|COUNTY|CITY OF|FEDERAL|USA)\b", name.upper()):
+            continue
         parcel = lookup_parcel(name)
         if parcel and parcel.get("prop_address"):
+            addr = parcel["prop_address"].strip()
+            # Skip bad addresses (vacant lots stored as 0 STREET)
+            if addr.startswith("0 ") or addr == "0":
+                continue
             for k, v in parcel.items():
                 if v:
                     rec[k] = v
