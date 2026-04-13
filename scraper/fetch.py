@@ -1,496 +1,547 @@
-"""
-Hillsborough County, FL — Motivated Seller Lead Scraper
-"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Hillsborough County — Motivated Seller Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Barlow+Condensed:wght@300;500;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0b0d;--bg2:#111316;--bg3:#181b1f;
+  --border:#232830;--border2:#2e3540;
+  --text:#d4dbe8;--muted:#5a6478;--dim:#3a4150;
+  --accent:#e8a020;--accent2:#f0c060;
+  --red:#e03030;--orange:#d06020;--green:#2a9d60;
+  --blue:#3070c8;--teal:#20909a;--purple:#8050c0;
+  --mono:'Space Mono',monospace;
+  --cond:'Barlow Condensed',sans-serif;
+  --body:'Barlow',sans-serif;
+  --radius:3px;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--body);font-size:14px;line-height:1.5;min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");background-size:256px;pointer-events:none;z-index:9999;opacity:.5}
+body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.03) 2px,rgba(0,0,0,.03) 4px);pointer-events:none;z-index:9998}
+h1,h2,h3{font-family:var(--cond);letter-spacing:.02em}
+code,samp,.mono{font-family:var(--mono);font-size:.85em}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--dim)}
+#topbar{position:sticky;top:0;z-index:100;background:rgba(10,11,13,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:20px;padding:0 28px;height:56px}
+#topbar .logo{font-family:var(--cond);font-weight:900;font-size:18px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);white-space:nowrap}
+#topbar .logo span{color:var(--text);font-weight:300}
+#topbar .sep{width:1px;height:24px;background:var(--border2)}
+#topbar .status-pill{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+#topbar .status-pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+#topbar .spacer{flex:1}
+#export-btn{font-family:var(--cond);font-weight:700;font-size:13px;letter-spacing:.08em;text-transform:uppercase;background:var(--accent);color:#000;border:none;border-radius:var(--radius);padding:7px 18px;cursor:pointer;transition:background .15s}
+#export-btn:hover{background:var(--accent2)}
+#hero{padding:32px 28px 24px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:40px;flex-wrap:wrap}
+.hero-title{font-family:var(--cond);font-weight:900;font-size:clamp(28px,4vw,48px);line-height:1;text-transform:uppercase;color:var(--text)}
+.hero-title .county{color:var(--accent)}
+.hero-meta{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px;display:flex;gap:16px;flex-wrap:wrap}
+.metric-strip{display:flex;gap:0;margin-left:auto;flex-wrap:wrap}
+.metric{padding:12px 28px;border-left:1px solid var(--border2);text-align:center;min-width:110px}
+.metric:first-child{border-left:none}
+.metric .val{font-family:var(--cond);font-weight:900;font-size:36px;line-height:1;color:var(--accent)}
+.metric .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:4px}
+#toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 28px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.filter-group{display:flex;align-items:center;gap:6px}
+.filter-label{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+input[type=text],select{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:12px;padding:6px 10px;border-radius:var(--radius);outline:none;transition:border-color .15s}
+input[type=text]{width:220px}
+input[type=text]:focus,select:focus{border-color:var(--accent)}
+select option{background:var(--bg3)}
+.chip-row{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:12px;cursor:pointer;border:1px solid var(--border2);background:var(--bg3);color:var(--muted);transition:all .15s;white-space:nowrap}
+.chip.active{background:var(--accent);color:#000;border-color:var(--accent);font-weight:700}
+.chip:hover:not(.active){border-color:var(--dim);color:var(--text)}
+.chip.hide-btn{border-color:var(--red);color:var(--red)}
+.chip.hide-btn.active{background:var(--red);color:#fff;border-color:var(--red)}
+#result-count{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto}
+#main{display:grid;grid-template-columns:1fr;gap:0}
+#table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead tr{background:var(--bg3);border-bottom:2px solid var(--accent)}
+thead th{font-family:var(--cond);font-weight:700;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:10px 14px;text-align:left;white-space:nowrap;cursor:pointer;user-select:none}
+thead th:hover{color:var(--text)}
+thead th.sorted-asc::after{content:" ↑";color:var(--accent)}
+thead th.sorted-desc::after{content:" ↓";color:var(--accent)}
+tbody tr{border-bottom:1px solid var(--border);cursor:pointer;transition:background .1s}
+tbody tr:hover{background:var(--bg2)}
+tbody tr.selected{background:rgba(232,160,32,.07)!important}
+tbody td{padding:9px 14px;vertical-align:middle;white-space:nowrap}
+tbody td.wrap{white-space:normal;max-width:220px}
+.score-badge{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:50%;font-family:var(--mono);font-size:12px;font-weight:700;border:2px solid currentColor}
+.score-hot{color:var(--red);background:rgba(224,48,48,.12)}
+.score-warm{color:var(--orange);background:rgba(208,96,32,.12)}
+.score-mid{color:var(--accent);background:rgba(232,160,32,.12)}
+.score-cool{color:var(--teal);background:rgba(32,144,154,.12)}
+.cat-pill{display:inline-block;font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:2px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.cat-lis_pendens{background:rgba(224,48,48,.18);color:#ff6060}
+.cat-foreclosure{background:rgba(224,48,48,.22);color:#ff4040}
+.cat-tax_deed{background:rgba(208,96,32,.18);color:#ff9040}
+.cat-judgment{background:rgba(128,80,192,.18);color:#b07aff}
+.cat-tax_lien{background:rgba(208,96,32,.18);color:#e07820}
+.cat-lien{background:rgba(90,100,120,.18);color:#8090aa}
+.cat-probate{background:rgba(32,144,154,.18);color:#40c0cc}
+.cat-noc{background:rgba(48,112,200,.18);color:#60a0f0}
+.cat-release{background:rgba(42,157,96,.18);color:#40c080}
+.cat-other{background:rgba(60,65,80,.18);color:#6a7090}
+.flag-list{display:flex;gap:4px;flex-wrap:wrap}
+.flag{font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:2px;background:rgba(232,160,32,.1);color:var(--accent2);border:1px solid rgba(232,160,32,.2);white-space:nowrap}
+.amount{font-family:var(--mono);color:var(--text)}
+.amount.large{color:var(--red)}
+a.doc-link{color:var(--blue);font-family:var(--mono);font-size:11px;text-decoration:none}
+a.doc-link:hover{color:var(--accent);text-decoration:underline}
+#detail-panel{position:fixed;right:0;top:56px;bottom:0;width:400px;background:var(--bg2);border-left:1px solid var(--border);overflow-y:auto;transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
+#detail-panel.open{transform:translateX(0)}
+#detail-close{position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;z-index:1}
+#detail-close .title{font-family:var(--cond);font-weight:700;font-size:15px;text-transform:uppercase;letter-spacing:.06em}
+#detail-close button{background:none;border:1px solid var(--border2);color:var(--muted);font-size:16px;width:28px;height:28px;border-radius:var(--radius);cursor:pointer;display:flex;align-items:center;justify-content:center}
+#detail-close button:hover{color:var(--text);border-color:var(--dim)}
+#detail-body{padding:20px 16px;flex:1}
+.detail-section{margin-bottom:24px}
+.detail-section h4{font-family:var(--cond);font-weight:700;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px}
+.detail-row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px solid rgba(35,40,48,.5)}
+.detail-row:last-child{border-bottom:none}
+.detail-key{font-family:var(--mono);font-size:10px;color:var(--muted);flex-shrink:0;margin-right:12px}
+.detail-val{font-size:12.5px;color:var(--text);text-align:right;word-break:break-word}
+.score-ring{display:flex;align-items:center;justify-content:center;margin:16px auto;width:90px;height:90px;border-radius:50%;font-family:var(--cond);font-weight:900;font-size:36px;border:3px solid var(--accent);color:var(--accent);box-shadow:0 0 24px rgba(232,160,32,.25)}
+#empty{display:none;padding:80px 28px;text-align:center;font-family:var(--cond);font-size:18px;color:var(--dim)}
+#loading{display:flex;align-items:center;justify-content:center;padding:80px;gap:12px;font-family:var(--mono);font-size:13px;color:var(--muted)}
+.spinner{width:20px;height:20px;border-radius:50%;border:2px solid var(--border2);border-top-color:var(--accent);animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#cat-summary{display:flex;gap:0;border-bottom:1px solid var(--border);overflow-x:auto}
+.cat-stat{flex:1;min-width:100px;padding:12px 16px;border-right:1px solid var(--border);text-align:center}
+.cat-stat:last-child{border-right:none}
+.cat-stat .n{font-family:var(--cond);font-weight:900;font-size:24px;line-height:1}
+.cat-stat .l{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:3px}
+@media(max-width:768px){
+  #hero{flex-direction:column;gap:16px}
+  .metric-strip{margin-left:0}
+  #detail-panel{width:100%;top:0}
+  table{font-size:11px}
+  tbody td{padding:7px 8px}
+  #topbar{padding:0 14px}
+  #toolbar{padding:12px 14px}
+  #hero{padding:20px 14px}
+}
+</style>
+</head>
+<body>
 
-import csv
-import io
-import json
-import logging
-import re
-import sys
-import time
-import zipfile
-import urllib3
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional
+<nav id="topbar">
+  <div class="logo">HILLSBOROUGH<span>LEADS</span></div>
+  <div class="sep"></div>
+  <div class="status-pill"><div class="dot"></div><span id="last-fetched">Loading…</span></div>
+  <div class="spacer"></div>
+  <button id="export-btn" onclick="exportCSV()">⬇ Export GHL CSV</button>
+</nav>
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+<section id="hero">
+  <div>
+    <div class="hero-title"><span class="county">Hillsborough County</span><br>Motivated Sellers</div>
+    <div class="hero-meta">
+      <span id="date-range">—</span>
+      <span>·</span>
+      <span>Hillsborough County Clerk of Circuit Courts + GIS Parcel Data</span>
+    </div>
+  </div>
+  <div class="metric-strip">
+    <div class="metric"><div class="val" id="m-total">—</div><div class="lbl">Total Leads</div></div>
+    <div class="metric"><div class="val" id="m-hot">—</div><div class="lbl">Hot (≥80)</div></div>
+    <div class="metric"><div class="val" id="m-addr">—</div><div class="lbl">With Address</div></div>
+    <div class="metric"><div class="val" id="m-week">—</div><div class="lbl">New This Week</div></div>
+  </div>
+</section>
 
-import requests
+<div id="cat-summary"></div>
 
-try:
-    from dbfread import DBF
-except ImportError:
-    DBF = None
+<div id="toolbar">
+  <div class="filter-group">
+    <span class="filter-label">Search</span>
+    <input type="text" id="q" placeholder="Owner, address, doc #…" oninput="applyFilters()"/>
+  </div>
+  <div class="filter-group">
+    <span class="filter-label">Type</span>
+    <select id="f-type" onchange="applyFilters()">
+      <option value="">All Types</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <span class="filter-label">Score</span>
+    <select id="f-score" onchange="applyFilters()">
+      <option value="">Any Score</option>
+      <option value="80">Hot (≥80)</option>
+      <option value="60">Warm (≥60)</option>
+      <option value="45">Medium (≥45)</option>
+    </select>
+  </div>
+  <div class="chip-row" id="flag-chips"></div>
+  <span class="chip hide-btn active" id="hide-llc-btn" onclick="toggleHideLLC()">🚫 Hide LLCs</span>
+  <div id="result-count">—</div>
+</div>
 
-try:
-    from rapidfuzz import fuzz
-    FUZZY_OK = True
-except ImportError:
-    FUZZY_OK = False
+<div id="main">
+  <div id="loading"><div class="spinner"></div>Loading records…</div>
+  <div id="empty">No records match the current filters.</div>
+  <div id="table-wrap" style="display:none">
+    <table id="records-table">
+      <thead>
+        <tr>
+          <th onclick="sortBy('score')" data-col="score">Score</th>
+          <th onclick="sortBy('cat_label')" data-col="cat_label">Type</th>
+          <th onclick="sortBy('doc_type')" data-col="doc_type">Code</th>
+          <th onclick="sortBy('filed')" data-col="filed">Filed</th>
+          <th onclick="sortBy('grantee')" data-col="grantee">Property Owner</th>
+          <th onclick="sortBy('owner')" data-col="owner">Grantor / Plaintiff</th>
+          <th onclick="sortBy('prop_address')" data-col="prop_address">Property Address</th>
+          <th onclick="sortBy('amount')" data-col="amount">Amount</th>
+          <th>Flags</th>
+          <th>Link</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-log = logging.getLogger("hillsborough_scraper")
+<div id="detail-panel">
+  <div id="detail-close">
+    <span class="title">Lead Detail</span>
+    <button onclick="closeDetail()">✕</button>
+  </div>
+  <div id="detail-body"></div>
+</div>
 
-INDEX_BASE      = "https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes"
-CLERK_BASE      = "https://publicaccess.hillsclerk.com/oripublicaccess"
-LOOK_BACK_DAYS  = 14
-MAX_RETRIES     = 3
-RETRY_DELAY     = 3
-FUZZY_THRESHOLD = 82
+<script>
+let ALL_RECORDS = [];
+let filtered    = [];
+let sortCol     = 'score';
+let sortDir     = -1;
+let hideLLC     = true;
 
-REPO_ROOT     = Path(__file__).parent.parent
-DASHBOARD_DIR = REPO_ROOT / "dashboard"
-DATA_DIR      = REPO_ROOT / "data"
-for d in (DASHBOARD_DIR, DATA_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+const CAT_COLORS = {
+  lis_pendens:'#ff6060', foreclosure:'#ff4040', tax_deed:'#ff9040',
+  judgment:'#b07aff', tax_lien:'#e07820', lien:'#8090aa',
+  probate:'#40c0cc', noc:'#60a0f0', release:'#40c080', other:'#6a7090',
+};
 
-TARGET_CODES = {
-    "LP","LIS","LISP","NF","NOF","NOFC","FC","FORE","FORECL",
-    "TD","TAXD","JUD","JUDG","JUDGMENT","CJ","CERJ","FJ","FINJ",
-    "ITL","IRS","IRSL","STL","STTL","FTL","FEDL",
-    "CL","CLOL","COL","ML","MECL","MECH","HL","HOAL",
-    "NOC","NOCOM","RLP","RELLP","SL","SATL",
+function isLLC(r) {
+  const g = (r.grantee || '').toUpperCase();
+  return /\b(LLC|INC|CORP|LTD|TRUST|ESTATE)\b/.test(g);
 }
 
-TARGET_NAMES = [
-    "LIS PENDENS","NOTICE OF LIS PENDENS","FORECLOSURE","NOTICE OF FORECLOSURE",
-    "TAX DEED","JUDGMENT","FINAL JUDGMENT","CERTIFIED JUDGMENT",
-    "IRS LIEN","FEDERAL TAX LIEN","STATE TAX LIEN","TAX LIEN",
-    "CLAIM OF LIEN","MECHANIC","MECHANICS LIEN","HOA LIEN",
-    "NOTICE OF COMMENCEMENT","RELEASE OF LIS PENDENS",
-]
+function formatFiled(filed) {
+  if (!filed) return '—';
+  const s = String(filed).trim();
+  if (/^\d{8}$/.test(s)) return s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  return s;
+}
 
-def classify(code, name):
-    code = code.upper().strip()
-    name = name.upper().strip()
-    if "LIS PENDENS" in name or code in ("LP","LIS","LISP"):
-        return "LP", "Lis Pendens", "lis_pendens"
-    if "FORECLOSURE" in name or code in ("NF","FC","NOF","NOFC","FORE"):
-        return "FC", "Foreclosure", "foreclosure"
-    if "TAX DEED" in name or code in ("TD","TAXD"):
-        return "TD", "Tax Deed", "tax_deed"
-    if "JUDGMENT" in name or code in ("JUD","JUDG","CJ","FJ","CERJ","FINJ"):
-        return "JUD", "Judgment", "judgment"
-    if any(x in name for x in ["IRS","FEDERAL TAX LIEN","FED TAX"]) or code in ("ITL","IRS","IRSL","FTL","FEDL"):
-        return "ITL", "Federal/IRS Tax Lien", "tax_lien"
-    if "STATE TAX LIEN" in name or code in ("STL","STTL"):
-        return "STL", "State Tax Lien", "tax_lien"
-    if "MECHANIC" in name or code in ("ML","MECL","MECH"):
-        return "ML", "Mechanic's Lien", "lien"
-    if "HOA" in name or code in ("HL","HOAL"):
-        return "HL", "HOA Lien", "lien"
-    if "CLAIM OF LIEN" in name or code in ("CL","CLOL","COL"):
-        return "CL", "Claim of Lien", "lien"
-    if "NOTICE OF COMMENCEMENT" in name or code in ("NOC","NOCOM"):
-        return "NOC", "Notice of Commencement", "noc"
-    if "RELEASE OF LIS PENDENS" in name or code in ("RLP","RELLP"):
-        return "RLP", "Release Lis Pendens", "release"
-    if "SATISFACTION OF LIEN" in name or code in ("SL","SATL"):
-        return "SL", "Satisfaction of Lien", "release"
-    return code, name.title(), "other"
+function toggleHideLLC() {
+  hideLLC = !hideLLC;
+  const btn = document.getElementById('hide-llc-btn');
+  btn.classList.toggle('active', hideLLC);
+  btn.textContent = hideLLC ? '🚫 Hide LLCs' : '✓ Show LLCs';
+  applyFilters();
+}
 
+async function init() {
+  try {
+    const res = await fetch('records.json');
+    if (!res.ok) throw new Error('records.json not found');
+    const data = await res.json();
+    ALL_RECORDS = data.records || [];
 
-_parcel_index: dict = {}
-_parcel_bucket: dict = {}
+    document.getElementById('last-fetched').textContent =
+      'Updated ' + new Date(data.fetched_at).toLocaleString();
+    const from = data.date_range?.from || '';
+    const to   = data.date_range?.to   || '';
+    document.getElementById('date-range').textContent =
+      `${formatFiled(from)} → ${formatFiled(to)}`;
+    document.getElementById('m-total').textContent = data.total || ALL_RECORDS.length;
+    document.getElementById('m-hot').textContent =
+      ALL_RECORDS.filter(r => r.score >= 80).length;
+    document.getElementById('m-addr').textContent = data.with_address || '—';
+    document.getElementById('m-week').textContent =
+      ALL_RECORDS.filter(r => r.flags && r.flags.includes('New this week')).length;
 
-def _norm(s):
-    return re.sub(r"\s+", " ", str(s or "")).strip().upper()
+    buildCatSummary();
+    buildTypeFilter();
+    buildFlagChips();
+    applyFilters();
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('table-wrap').style.display = 'block';
+  } catch(e) {
+    document.getElementById('loading').innerHTML =
+      `<span style="color:var(--red)">⚠ Could not load records.json<br><small style="color:var(--muted)">${e.message}</small></span>`;
+  }
+}
 
-def _col(row, *names):
-    for n in names:
-        v = row.get(n, "")
-        if v:
-            return str(v).strip()
-    return ""
+function buildCatSummary() {
+  const counts = {};
+  ALL_RECORDS.forEach(r => {
+    const k = r.cat_label || r.cat || 'Other';
+    counts[k] = (counts[k] || 0) + 1;
+  });
+  const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+  const wrap = document.getElementById('cat-summary');
+  wrap.innerHTML = sorted.map(([l,n]) => {
+    const cat = ALL_RECORDS.find(r => r.cat_label === l)?.cat || 'other';
+    const col = CAT_COLORS[cat] || '#6a7090';
+    return `<div class="cat-stat" style="cursor:pointer" onclick="filterCat('${l}')">
+      <div class="n" style="color:${col}">${n}</div>
+      <div class="l">${l}</div>
+    </div>`;
+  }).join('');
+}
 
-def _name_variants(owner_raw):
-    parts = re.split(r",\s*", owner_raw.strip(), maxsplit=1)
-    if len(parts) == 2:
-        last, first = parts
-        return list({_norm(owner_raw), _norm(f"{first} {last}"), _norm(f"{last} {first}")})
-    words = owner_raw.strip().split()
-    if len(words) >= 2:
-        first = " ".join(words[1:])
-        last  = words[0]
-        return list({_norm(owner_raw), _norm(f"{first} {last}"), _norm(f"{last} {first}")})
-    return [_norm(owner_raw)]
+function buildTypeFilter() {
+  const types = [...new Set(ALL_RECORDS.map(r => r.doc_type))].sort();
+  const sel = document.getElementById('f-type');
+  types.forEach(t => {
+    const o = document.createElement('option');
+    o.value = t; o.textContent = t;
+    sel.appendChild(o);
+  });
+}
 
-def _first_word(s):
-    parts = s.split()
-    return parts[0] if parts else ""
+const FLAG_OPTIONS = [
+  'Lis pendens','Pre-foreclosure','Judgment lien','Tax lien',
+  'Mechanic lien','Probate / estate','LLC / corp owner','New this week'
+];
+let activeFlags = new Set();
 
-def lookup_parcel(owner):
-    key = _norm(owner)
-    if not key:
-        return None
-    result = _parcel_index.get(key)
-    if result:
-        return result
-    for variant in _name_variants(owner):
-        result = _parcel_index.get(variant)
-        if result:
-            return result
-    if FUZZY_OK:
-        first_words = set()
-        for variant in _name_variants(owner):
-            fw = _first_word(variant)
-            if fw:
-                first_words.add(fw)
-        candidates = []
-        for fw in first_words:
-            candidates.extend(_parcel_bucket.get(fw, []))
-        best_score = 0
-        best_match = None
-        for candidate in candidates:
-            score = fuzz.token_sort_ratio(key, candidate)
-            if score > best_score:
-                best_score = score
-                best_match = candidate
-        if best_match and best_score >= FUZZY_THRESHOLD:
-            return _parcel_index.get(best_match)
-    return None
+function buildFlagChips() {
+  const wrap = document.getElementById('flag-chips');
+  wrap.innerHTML = FLAG_OPTIONS.map(f =>
+    `<span class="chip" onclick="toggleFlag('${f}')" data-flag="${f}">${f}</span>`
+  ).join('');
+}
 
-def download_parcel_dbf():
-    cache_dir = REPO_ROOT / ".cache"
-    cache_dir.mkdir(exist_ok=True)
-    dbf_path = cache_dir / "parcels.dbf"
-    if dbf_path.exists() and (time.time() - dbf_path.stat().st_mtime) < 86400:
-        log.info("Using cached parcel data")
-        return dbf_path
-    urls = [
-        "https://gis.hcpafl.org/downloadfiles/Shapefiles/Parcels.zip",
-        "https://gis.hcpafl.org/downloadfiles/Parcels.zip",
-    ]
-    s = requests.Session()
-    s.headers.update({"User-Agent": "Mozilla/5.0"})
-    for url in urls:
-        try:
-            log.info(f"Parcel download: {url}")
-            r = s.get(url, timeout=120, verify=False, stream=True)
-            if r.status_code == 200:
-                zdata = b"".join(r.iter_content(65536))
-                with zipfile.ZipFile(io.BytesIO(zdata)) as zf:
-                    dbf_files = [n for n in zf.namelist() if n.lower().endswith(".dbf")]
-                    if dbf_files:
-                        dbf_path.write_bytes(zf.read(dbf_files[0]))
-                        log.info("Parcel DBF saved")
-                        return dbf_path
-        except Exception as e:
-            log.warning(f"Parcel download failed: {e}")
-    return None
+function toggleFlag(f) {
+  if (activeFlags.has(f)) activeFlags.delete(f);
+  else activeFlags.add(f);
+  document.querySelectorAll('[data-flag]').forEach(el => {
+    el.classList.toggle('active', activeFlags.has(el.dataset.flag));
+  });
+  applyFilters();
+}
 
-def build_parcel_index(dbf_path):
-    global _parcel_bucket
-    if DBF is None:
-        return {}
-    idx = {}
-    try:
-        table = DBF(str(dbf_path), encoding="latin-1", ignore_missing_memofile=True)
-        for row in table:
-            try:
-                owner_raw = _col(row, "OWNER", "OWN1", "OWN_NAME")
-                if not owner_raw:
-                    continue
-                rec = {
-                    "prop_address": _col(row, "SITE_ADDR", "SITEADDR"),
-                    "prop_city":    _col(row, "SITE_CITY", "SITECITY"),
-                    "prop_state":   "FL",
-                    "prop_zip":     _col(row, "SITE_ZIP", "SITEZIP"),
-                    "mail_address": _col(row, "ADDR_1", "MAILADR1"),
-                    "mail_city":    _col(row, "CITY", "MAILCITY"),
-                    "mail_state":   _col(row, "STATE", "MAILSTATE") or "FL",
-                    "mail_zip":     _col(row, "ZIP", "MAILZIP"),
-                }
-                for v in _name_variants(owner_raw):
-                    if v and v not in idx:
-                        idx[v] = rec
-            except Exception:
-                pass
-    except Exception as e:
-        log.warning(f"DBF error: {e}")
+let activeCat = '';
+function filterCat(label) {
+  activeCat = activeCat === label ? '' : label;
+  applyFilters();
+}
 
-    bucket = {}
-    for k in idx:
-        fw = _first_word(k)
-        if fw not in bucket:
-            bucket[fw] = []
-        bucket[fw].append(k)
-    _parcel_bucket = bucket
+function applyFilters() {
+  const q      = document.getElementById('q').value.toLowerCase();
+  const fType  = document.getElementById('f-type').value;
+  const fScore = parseInt(document.getElementById('f-score').value) || 0;
 
-    log.info(f"Parcel index: {len(idx):,} variants, {len(bucket):,} first-word buckets")
-    if FUZZY_OK:
-        log.info("Fast fuzzy matching enabled")
-    else:
-        log.warning("rapidfuzz not installed — exact matching only")
-    return idx
-
-def fetch_file(url):
-    s = requests.Session()
-    s.headers.update({"User-Agent": "Mozilla/5.0"})
-    for attempt in range(MAX_RETRIES):
-        try:
-            r = s.get(url, timeout=30, verify=False)
-            if r.status_code == 200:
-                return r.text
-            if r.status_code == 404:
-                return None
-            return None
-        except Exception as e:
-            log.warning(f"Fetch attempt {attempt+1}: {e}")
-            time.sleep(RETRY_DELAY)
-    return None
-
-def parse_d_file(content):
-    records = []
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("|")
-        if len(parts) < 5:
-            continue
-        try:
-            instrument = parts[2].strip() if len(parts) > 2 else ""
-            doc_code   = parts[3].strip().upper() if len(parts) > 3 else ""
-            doc_name   = parts[4].strip().upper() if len(parts) > 4 else ""
-            legal      = parts[5].strip() if len(parts) > 5 else ""
-            rec_date   = parts[10].strip() if len(parts) > 10 else ""
-            is_target  = doc_code in TARGET_CODES or any(n in doc_name for n in TARGET_NAMES)
-            if not is_target:
-                continue
-            matched, label, cat = classify(doc_code, doc_name)
-            clerk_url = f"{CLERK_BASE}/?instrument={instrument}" if instrument else ""
-            records.append({
-                "doc_num": instrument, "doc_type": matched,
-                "filed": _norm_date(rec_date), "cat": cat, "cat_label": label,
-                "owner": "", "grantee": "", "amount": 0.0, "legal": legal,
-                "clerk_url": clerk_url,
-                "prop_address": "", "prop_city": "", "prop_state": "FL", "prop_zip": "",
-                "mail_address": "", "mail_city": "", "mail_state": "", "mail_zip": "",
-                "flags": [], "score": 0,
-            })
-        except Exception as e:
-            log.warning(f"Parse error: {e}")
-    return records
-
-def parse_p_file(content):
-    parties = {}
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("|")
-        if len(parts) < 5:
-            continue
-        try:
-            instrument = parts[2].strip()
-            party_type = parts[4].strip().upper()
-            party_name = parts[5].strip() if len(parts) > 5 else ""
-            if instrument not in parties:
-                parties[instrument] = {"grantor": "", "grantee": ""}
-            if party_type == "FRM" and not parties[instrument]["grantor"]:
-                parties[instrument]["grantor"] = party_name
-            elif party_type == "TO" and not parties[instrument]["grantee"]:
-                parties[instrument]["grantee"] = party_name
-        except Exception:
-            pass
-    return parties
-
-def scrape_day(date_str):
-    d_url = f"{INDEX_BASE}/D{date_str}01id.29"
-    d_content = fetch_file(d_url)
-    if not d_content:
-        return []
-    records = parse_d_file(d_content)
-    log.info(f"  {date_str}: {len(records)} target records")
-    if not records:
-        return []
-    p_url = f"{INDEX_BASE}/P{date_str}01id.29"
-    p_content = fetch_file(p_url)
-    if p_content:
-        parties = parse_p_file(p_content)
-        for rec in records:
-            instr = rec["doc_num"]
-            if instr in parties:
-                rec["owner"]   = parties[instr]["grantor"]
-                rec["grantee"] = parties[instr]["grantee"]
-    return records
-
-def _norm_date(raw):
-    raw = raw.strip()
-    for fmt in ("%m/%d/%Y", "%Y%m%d", "%Y-%m-%d", "%m-%d-%Y"):
-        try:
-            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-    return raw
-
-WEEK_AGO = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-
-def compute_flags_and_score(rec, all_records):
-    flags = []
-    score = 30
-    dt      = rec.get("doc_type", "")
-    cat     = rec.get("cat", "")
-    owner   = rec.get("owner", "")
-    grantee = rec.get("grantee", "")
-    filed   = rec.get("filed", "")
-    if dt == "LP":              flags.append("Lis pendens")
-    if dt in ("NF","FC"):      flags.append("Pre-foreclosure")
-    if cat == "judgment":       flags.append("Judgment lien")
-    if cat == "tax_lien":       flags.append("Tax lien")
-    if dt in ("ML","CL"):      flags.append("Mechanic lien")
-    if dt == "HL":              flags.append("HOA lien")
-    if cat == "probate":        flags.append("Probate / estate")
-    # Only flag LLC if the PROPERTY OWNER (grantee) is an LLC, not the plaintiff
-    if grantee and re.search(r"\b(LLC|INC|CORP|LTD|TRUST|ESTATE)\b", grantee.upper()):
-        flags.append("LLC / corp owner")
-    if filed >= WEEK_AGO:       flags.append("New this week")
-    score += len(flags) * 10
-    owner_key  = _norm(owner)
-    owner_docs = {r["doc_type"] for r in all_records if _norm(r.get("owner","")) == owner_key}
-    if "LP" in owner_docs and any(d in owner_docs for d in ("NF","FC")):
-        score += 20
-    amt = rec.get("amount", 0) or 0
-    if amt > 100_000:  score += 15
-    elif amt > 50_000: score += 10
-    if filed >= WEEK_AGO: score += 5
-    if rec.get("prop_address") or rec.get("mail_address"): score += 5
-    return flags, min(score, 100)
-
-def enrich_record(rec):
-    for name in [rec.get("grantee",""), rec.get("owner","")]:
-        if not name:
-            continue
-        if re.search(r"\b(LLC|INC|CORP|LTD|TRUST|STATE OF|COUNTY|CITY OF|FEDERAL|USA)\b", name.upper()):
-            continue
-        parcel = lookup_parcel(name)
-        if parcel and parcel.get("prop_address"):
-            addr = parcel["prop_address"].strip()
-            if addr.startswith("0 ") or addr == "0":
-                continue
-            for k, v in parcel.items():
-                if v:
-                    rec[k] = v
-            return rec
-    return rec
-
-def _split_name(full):
-    full = full.strip()
-    if "," in full:
-        p = full.split(",", 1)
-        return p[1].strip().title(), p[0].strip().title()
-    p = full.split()
-    return (p[0].title(), " ".join(p[1:]).title()) if len(p) >= 2 else (full.title(), "")
-
-def write_outputs(records, date_from, date_to):
-    with_address = sum(1 for r in records if r.get("prop_address") or r.get("mail_address"))
-    payload = {
-        "fetched_at":   datetime.utcnow().isoformat() + "Z",
-        "source":       "Hillsborough County Clerk of Circuit Courts",
-        "county":       "Hillsborough",
-        "state":        "FL",
-        "date_range":   {"from": date_from, "to": date_to},
-        "total":        len(records),
-        "with_address": with_address,
-        "records":      records,
+  filtered = ALL_RECORDS.filter(r => {
+    if (hideLLC && isLLC(r)) return false;
+    if (fType  && r.doc_type !== fType) return false;
+    if (fScore && r.score < fScore)     return false;
+    if (activeCat && r.cat_label !== activeCat) return false;
+    if (activeFlags.size) {
+      const rf = new Set(r.flags || []);
+      for (const f of activeFlags) if (!rf.has(f)) return false;
     }
-    for path in [DASHBOARD_DIR / "records.json", DATA_DIR / "records.json"]:
-        path.write_text(json.dumps(payload, indent=2, default=str))
-        log.info(f"Wrote {len(records)} records to {path}")
-    ghl_path = DATA_DIR / "ghl_export.csv"
-    fieldnames = [
-        "First Name","Last Name","Mailing Address","Mailing City","Mailing State","Mailing Zip",
-        "Property Address","Property City","Property State","Property Zip",
-        "Lead Type","Document Type","Date Filed","Document Number","Amount/Debt Owed",
-        "Seller Score","Motivated Seller Flags","Source","Public Records URL",
-    ]
-    with ghl_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for r in records:
-            first, last = _split_name(r.get("grantee","") or r.get("owner",""))
-            writer.writerow({
-                "First Name": first, "Last Name": last,
-                "Mailing Address": r.get("mail_address",""),
-                "Mailing City":    r.get("mail_city",""),
-                "Mailing State":   r.get("mail_state",""),
-                "Mailing Zip":     r.get("mail_zip",""),
-                "Property Address":r.get("prop_address",""),
-                "Property City":   r.get("prop_city",""),
-                "Property State":  r.get("prop_state","FL"),
-                "Property Zip":    r.get("prop_zip",""),
-                "Lead Type":       r.get("cat_label",""),
-                "Document Type":   r.get("doc_type",""),
-                "Date Filed":      r.get("filed",""),
-                "Document Number": r.get("doc_num",""),
-                "Amount/Debt Owed":r.get("amount",""),
-                "Seller Score":    r.get("score",0),
-                "Motivated Seller Flags": "; ".join(r.get("flags",[])),
-                "Source":          "Hillsborough County Clerk of Circuit Courts",
-                "Public Records URL": r.get("clerk_url",""),
-            })
-    log.info("GHL CSV written")
+    if (q) {
+      const haystack = [
+        r.grantee, r.owner, r.doc_num, r.prop_address,
+        r.mail_address, r.doc_type, r.cat_label, r.legal
+      ].join(' ').toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
 
-def business_days_back(n):
-    days = []
-    d = datetime.now()
-    while len(days) < n:
-        d -= timedelta(days=1)
-        if d.weekday() < 5:
-            days.append(d.strftime("%Y%m%d"))
-    return days
+  filtered.sort((a,b) => {
+    let av = a[sortCol] ?? '', bv = b[sortCol] ?? '';
+    if (typeof av === 'number') return sortDir * (av - bv);
+    return sortDir * String(av).localeCompare(String(bv));
+  });
 
-def main():
-    global _parcel_index
-    log.info("Hillsborough County FL — Motivated Seller Scraper")
-    dbf_path = download_parcel_dbf()
-    if dbf_path and dbf_path.exists():
-        _parcel_index = build_parcel_index(dbf_path)
-    days = business_days_back(LOOK_BACK_DAYS)
-    log.info(f"Checking {len(days)} business days: {days[-1]} to {days[0]}")
-    all_records = []
-    found_days = 0
-    for day in reversed(days):
-        try:
-            recs = scrape_day(day)
-            if recs:
-                found_days += 1
-                all_records.extend(recs)
-                log.info(f"Day {day}: {len(recs)} records")
-            time.sleep(0.5)
-        except Exception as e:
-            log.warning(f"Day {day} failed: {e}")
-    log.info(f"Found data for {found_days} days")
-    seen = set()
-    unique = []
-    for r in all_records:
-        key = r.get("doc_num","") or id(r)
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-    all_records = unique
-    log.info(f"Total unique records: {len(all_records)}")
-    for rec in all_records:
-        try:
-            enrich_record(rec)
-            flags, score = compute_flags_and_score(rec, all_records)
-            rec["flags"] = flags
-            rec["score"] = score
-        except Exception as e:
-            rec["flags"] = []
-            rec["score"] = 30
-    all_records.sort(key=lambda r: r.get("score", 0), reverse=True)
-    date_from = days[-1]
-    date_to   = days[0]
-    write_outputs(all_records, date_from, date_to)
-    log.info("Done")
+  document.getElementById('result-count').textContent =
+    `${filtered.length.toLocaleString()} leads`;
+  renderTable();
+}
 
-if __name__ == "__main__":
-    main()
+function sortBy(col) {
+  if (sortCol === col) sortDir *= -1;
+  else { sortCol = col; sortDir = -1; }
+  document.querySelectorAll('thead th').forEach(th => {
+    th.classList.remove('sorted-asc','sorted-desc');
+    if (th.dataset.col === col)
+      th.classList.add(sortDir === 1 ? 'sorted-asc' : 'sorted-desc');
+  });
+  applyFilters();
+}
+
+function scoreClass(s) {
+  if (s >= 80) return 'score-hot';
+  if (s >= 60) return 'score-warm';
+  if (s >= 45) return 'score-mid';
+  return 'score-cool';
+}
+
+function fmt$(n) {
+  if (!n) return '—';
+  return Number(n).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
+}
+
+function renderTable() {
+  const tbody = document.getElementById('tbody');
+  const empty = document.getElementById('empty');
+  const wrap  = document.getElementById('table-wrap');
+
+  if (!filtered.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  wrap.style.display = 'block';
+
+  const rows = filtered.slice(0, 500);
+  tbody.innerHTML = rows.map((r, i) => {
+    const sc = r.score || 0;
+    const addr = [r.prop_address, r.prop_city].filter(Boolean).join(', ') || '—';
+    const flagHtml = (r.flags||[]).slice(0,3).map(f =>
+      `<span class="flag">${f}</span>`).join('');
+    const amtHtml = r.amount > 100000
+      ? `<span class="amount large">${fmt$(r.amount)}</span>`
+      : `<span class="amount">${r.amount ? fmt$(r.amount) : '—'}</span>`;
+    const linkHtml = r.clerk_url
+      ? `<a class="doc-link" href="${r.clerk_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗</a>`
+      : '—';
+    return `<tr onclick="openDetail(${i})" data-idx="${i}">
+      <td><span class="score-badge ${scoreClass(sc)}">${sc}</span></td>
+      <td><span class="cat-pill cat-${r.cat||'other'}">${r.cat_label||r.cat||'—'}</span></td>
+      <td><code>${r.doc_type||'—'}</code></td>
+      <td class="mono">${formatFiled(r.filed)}</td>
+      <td class="wrap">${r.grantee||'—'}</td>
+      <td class="wrap" style="color:var(--muted);font-size:11px">${r.owner||'—'}</td>
+      <td class="wrap">${addr}</td>
+      <td>${amtHtml}</td>
+      <td><div class="flag-list">${flagHtml}</div></td>
+      <td>${linkHtml}</td>
+    </tr>`;
+  }).join('');
+
+  if (filtered.length > 500) {
+    tbody.innerHTML += `<tr><td colspan="10" style="text-align:center;padding:14px;color:var(--muted);font-family:var(--mono);font-size:11px">
+      Showing 500 of ${filtered.length} — refine filters to see more.
+    </td></tr>`;
+  }
+}
+
+function openDetail(idx) {
+  const r = filtered[idx];
+  if (!r) return;
+  document.querySelectorAll('tbody tr').forEach((tr,i) => {
+    tr.classList.toggle('selected', i === idx);
+  });
+  const sc = r.score || 0;
+  const propAddr = [r.prop_address, r.prop_city, r.prop_state, r.prop_zip].filter(Boolean).join(', ');
+  const mailAddr = [r.mail_address, r.mail_city, r.mail_state, r.mail_zip].filter(Boolean).join(', ');
+  document.getElementById('detail-body').innerHTML = `
+    <div class="score-ring">${sc}</div>
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-family:var(--cond);font-weight:900;font-size:20px">${r.grantee||r.owner||'Unknown Owner'}</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px">${r.cat_label||''} · ${r.doc_type||''}</div>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:20px">
+      ${(r.flags||[]).map(f=>`<span class="flag" style="font-size:10px">${f}</span>`).join('')}
+    </div>
+    <div class="detail-section">
+      <h4>Document</h4>
+      <div class="detail-row"><span class="detail-key">Doc Number</span><span class="detail-val mono">${r.doc_num||'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Type</span><span class="detail-val">${r.cat_label||'—'} (${r.doc_type||'—'})</span></div>
+      <div class="detail-row"><span class="detail-key">Filed</span><span class="detail-val mono">${formatFiled(r.filed)}</span></div>
+      <div class="detail-row"><span class="detail-key">Amount</span><span class="detail-val" style="color:${r.amount>100000?'var(--red)':'inherit'}">${r.amount?fmt$(r.amount):'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Property Owner</span><span class="detail-val">${r.grantee||'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Grantor / Plaintiff</span><span class="detail-val">${r.owner||'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Legal Desc</span><span class="detail-val" style="font-size:11px;max-width:220px;white-space:normal;text-align:right">${r.legal||'—'}</span></div>
+    </div>
+    <div class="detail-section">
+      <h4>Property</h4>
+      <div class="detail-row"><span class="detail-key">Site Address</span><span class="detail-val" style="white-space:normal;text-align:right">${propAddr||'—'}</span></div>
+      <div class="detail-row"><span class="detail-key">Mail Address</span><span class="detail-val" style="white-space:normal;text-align:right">${mailAddr||'—'}</span></div>
+    </div>
+    <div class="detail-section">
+      <h4>Links</h4>
+      ${r.clerk_url?`<div class="detail-row"><span class="detail-key">Clerk Portal</span>
+        <a class="doc-link" href="${r.clerk_url}" target="_blank" rel="noopener">View Document ↗</a></div>`:''}
+    </div>
+  `;
+  document.getElementById('detail-panel').classList.add('open');
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.remove('open');
+  document.querySelectorAll('tbody tr').forEach(tr => tr.classList.remove('selected'));
+}
+
+function exportCSV() {
+  const cols = [
+    'First Name','Last Name','Mailing Address','Mailing City','Mailing State','Mailing Zip',
+    'Property Address','Property City','Property State','Property Zip',
+    'Lead Type','Document Type','Date Filed','Document Number',
+    'Amount/Debt Owed','Seller Score','Motivated Seller Flags','Source','Public Records URL'
+  ];
+  const rows = [cols.join(',')];
+  filtered.forEach(r => {
+    const owner = (r.grantee || r.owner || '').trim();
+    let first = '', last = '';
+    if (owner.includes(',')) {
+      const [l, f] = owner.split(',');
+      last = l.trim(); first = (f||'').trim();
+    } else {
+      const parts = owner.split(' ');
+      first = parts[0] || '';
+      last  = parts.slice(1).join(' ');
+    }
+    const vals = [
+      first, last,
+      r.mail_address||'', r.mail_city||'', r.mail_state||'', r.mail_zip||'',
+      r.prop_address||'', r.prop_city||'', r.prop_state||'FL', r.prop_zip||'',
+      r.cat_label||'', r.doc_type||'', formatFiled(r.filed), r.doc_num||'',
+      r.amount||'', r.score||0,
+      (r.flags||[]).join('; '),
+      'Hillsborough County Clerk of Circuit Courts',
+      r.clerk_url||''
+    ].map(v => `"${String(v).replace(/"/g,'""')}"`);
+    rows.push(vals.join(','));
+  });
+  const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `hillsborough_leads_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+document.addEventListener('click', e => {
+  const panel = document.getElementById('detail-panel');
+  if (panel.classList.contains('open')
+    && !panel.contains(e.target)
+    && !e.target.closest('tbody tr')) {
+    closeDetail();
+  }
+});
+
+init();
+</script>
+</body>
+</html>
