@@ -66,7 +66,7 @@ Next steps:
 2. Download the skip traced results from Xleads
 3. Run: python3 scraper/import_xleads.py ~/Downloads/xleads_results.csv
 
-Dashboard: https://trustcircleenterprise.github.io/cobb-leads/
+Dashboard: https://trustcircleenterprise.github.io/hillsborough-leads/
 """
     try:
         msg = MIMEMultipart()
