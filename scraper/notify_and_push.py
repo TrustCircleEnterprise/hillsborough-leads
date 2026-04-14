@@ -132,8 +132,10 @@ def main():
     total = data.get("total", len(records))
     with_address = data.get("with_address", 0)
     xleads_count = export_xleads_csv(records)
-    print("Pushing to GHL workflow...")
-    success, failed = push_to_ghl(records)
+    # GHL push disabled - use import_xleads.py after skip tracing instead
+    success, failed = 0, 0
+    # print("Pushing to GHL workflow...")
+    # success, failed = push_to_ghl(records)
     print("Sending notifications...")
     send_notification(total, with_address, xleads_count)
     print(f"Done! {success} contacts pushed to GHL, {xleads_count} ready for Xleads.")
